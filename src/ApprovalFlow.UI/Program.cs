@@ -1,28 +1,27 @@
-using Microsoft.AspNetCore.Components;
-using Microsoft.AspNetCore.Components.Web;
-using ApprovalFlow.UI.Data;
-
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
 builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
-builder.Services.AddSingleton<WeatherForecastService>();
+
+var gatewayUrl = builder.Configuration["GATEWAY_URL"] ?? "http://gateway:8080";
+builder.Services.AddHttpClient("Gateway", client =>
+{
+    client.BaseAddress = new Uri(gatewayUrl);
+});
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error");
 }
 
-
 app.UseStaticFiles();
-
 app.UseRouting();
 
 app.MapBlazorHub();
 app.MapFallbackToPage("/_Host");
+
+app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "ui" }));
 
 app.Run();

@@ -1,0 +1,107 @@
+@page "/status"
+@using ApprovalFlow.Shared.Models
+@inject IHttpClientFactory HttpClientFactory
+
+<PageTitle>Check Status - ApprovalFlow</PageTitle>
+
+<h1>Check Invoice Status</h1>
+
+<div class="row mt-3">
+    <div class="col-md-6">
+        <div class="input-group">
+            <input @bind="trackingId" class="form-control" placeholder="Enter Tracking ID (e.g. INV-1001)" />
+            <button @onclick="CheckStatus" class="btn btn-primary" disabled="@loading">
+                @(loading ? "Checking..." : "Check")
+            </button>
+        </div>
+    </div>
+</div>
+
+@if (status != null)
+{
+    <div class="card mt-4">
+        <div class="card-header">
+            <strong>Invoice:</strong> @status.InvoiceId
+        </div>
+        <div class="card-body">
+            <p><strong>Status:</strong>
+                <span class="badge @GetStatusBadgeClass(status.Status)">@status.Status</span>
+            </p>
+            <p><strong>Reason:</strong> @status.Reason</p>
+            @if (status.AgentDecision != null)
+            {
+                <hr />
+                <h6>AI Agent Analysis</h6>
+                <p><strong>Recommendation:</strong> @status.AgentDecision.Recommendation</p>
+                <p><strong>Confidence:</strong> @(status.AgentDecision.Confidence.ToString("P0"))</p>
+                <p><strong>Reasoning:</strong> @status.AgentDecision.Reasoning</p>
+                @if (status.AgentDecision.Violations.Any())
+                {
+                    <p><strong>Violations:</strong> @string.Join(", ", status.AgentDecision.Violations)</p>
+                }
+            }
+        </div>
+    </div>
+}
+
+@if (error != null)
+{
+    <div class="alert alert-danger mt-3">@error</div>
+}
+
+@code {
+    private string trackingId = "";
+    private InvoiceStatusResponse? status;
+    private string? error;
+    private bool loading = false;
+
+    private async Task CheckStatus()
+    {
+        if (string.IsNullOrWhiteSpace(trackingId)) return;
+
+        loading = true;
+        status = null;
+        error = null;
+
+        try
+        {
+            var client = HttpClientFactory.CreateClient("Gateway");
+            var response = await client.GetAsync($"/api/invoices/{trackingId}/status");
+
+            if (response.IsSuccessStatusCode)
+            {
+                status = await response.Content.ReadFromJsonAsync<InvoiceStatusResponse>();
+            }
+            else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                error = "Invoice not found.";
+            }
+            else
+            {
+                error = $"Error: {response.StatusCode}";
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to check status: {ex.Message}";
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private string GetStatusBadgeClass(string status) => status switch
+    {
+        "Paid" => "bg-success",
+        "AutoApproved" => "bg-success",
+        "Approved" => "bg-info",
+        "PendingReview" => "bg-warning text-dark",
+        "Rejected" => "bg-danger",
+        "PaymentFailed" => "bg-danger",
+        "Duplicate" => "bg-secondary",
+        "Received" => "bg-primary",
+        "Processing" => "bg-info",
+        _ => "bg-secondary"
+    };
+}

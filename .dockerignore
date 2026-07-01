@@ -1,0 +1,13 @@
+**/.git
+**/.vs
+**/.idea
+**/bin
+**/obj
+**/.env
+**/node_modules
+openspec/
+presentations/
+task/
+.obsidian/
+*.md
+!src/**/*.md

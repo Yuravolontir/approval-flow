@@ -1,0 +1,141 @@
+@page "/queue"
+@using ApprovalFlow.Shared.Models
+@inject IHttpClientFactory HttpClientFactory
+
+<PageTitle>Approver Queue - ApprovalFlow</PageTitle>
+
+<h1>Approver Queue</h1>
+
+<button @onclick="LoadQueue" class="btn btn-outline-primary mb-3" disabled="@loading">
+    @(loading ? "Loading..." : "Refresh")
+</button>
+
+@if (actionResult != null)
+{
+    <div class="alert alert-info">@actionResult</div>
+}
+
+@if (items != null && items.Any())
+{
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th>Invoice</th>
+                <th>Vendor</th>
+                <th>Amount</th>
+                <th>Category</th>
+                <th>AI Recommendation</th>
+                <th>Confidence</th>
+                <th>Violations</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in items)
+            {
+                <tr>
+                    <td>@item.InvoiceId</td>
+                    <td>@item.Vendor</td>
+                    <td>@item.Total.ToString("C") @item.Currency</td>
+                    <td>@item.Category</td>
+                    <td>
+                        @if (item.AgentDecision != null)
+                        {
+                            <span class="badge @GetRecommendationBadge(item.AgentDecision.Recommendation)">
+                                @item.AgentDecision.Recommendation
+                            </span>
+                            <br /><small>@item.AgentDecision.Reasoning</small>
+                        }
+                    </td>
+                    <td>@(item.AgentDecision?.Confidence.ToString("P0") ?? "-")</td>
+                    <td>
+                        @foreach (var v in item.RouterViolations)
+                        {
+                            <span class="badge bg-warning text-dark me-1">@v</span>
+                        }
+                    </td>
+                    <td>
+                        <div class="btn-group btn-group-sm">
+                            <button @onclick="@(() => MakeDecision(item.InvoiceId, "approve"))" class="btn btn-success">Approve</button>
+                            <button @onclick="@(() => MakeDecision(item.InvoiceId, "reject"))" class="btn btn-danger">Reject</button>
+                            <button @onclick="@(() => MakeDecision(item.InvoiceId, "request_info"))" class="btn btn-secondary">Info</button>
+                        </div>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+else if (items != null)
+{
+    <div class="alert alert-info">No items pending review.</div>
+}
+else if (error != null)
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+@code {
+    private List<HitlQueueItem>? items;
+    private string? error;
+    private string? actionResult;
+    private bool loading = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadQueue();
+    }
+
+    private async Task LoadQueue()
+    {
+        loading = true;
+        error = null;
+        actionResult = null;
+
+        try
+        {
+            var client = HttpClientFactory.CreateClient("Gateway");
+            items = await client.GetFromJsonAsync<List<HitlQueueItem>>("/api/workflow/queue");
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to load queue: {ex.Message}";
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task MakeDecision(string invoiceId, string action)
+    {
+        try
+        {
+            var client = HttpClientFactory.CreateClient("Gateway");
+            var request = new HitlDecisionRequest { Action = action };
+            var response = await client.PostAsJsonAsync($"/api/workflow/{invoiceId}/decision", request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                actionResult = $"Invoice {invoiceId}: {action} applied successfully.";
+                await LoadQueue();
+            }
+            else
+            {
+                actionResult = $"Error: {response.StatusCode}";
+            }
+        }
+        catch (Exception ex)
+        {
+            actionResult = $"Failed: {ex.Message}";
+        }
+    }
+
+    private string GetRecommendationBadge(string rec) => rec switch
+    {
+        "approve" => "bg-success",
+        "reject" => "bg-danger",
+        "escalate" => "bg-warning text-dark",
+        _ => "bg-secondary"
+    };
+}

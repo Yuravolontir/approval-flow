@@ -1,0 +1,206 @@
+services:
+  # --- Infrastructure ---
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - approval-flow
+
+  placement:
+    image: daprio/dapr:1.14.4
+    command: ["./placement", "-port", "50006"]
+    ports:
+      - "50006:50006"
+    networks:
+      - approval-flow
+
+  # --- Gateway ---
+  gateway:
+    build:
+      context: .
+      dockerfile: src/ApprovalFlow.Gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - approval-flow
+
+  gateway-dapr:
+    image: daprio/daprd:1.14.4
+    command: [
+      "./daprd",
+      "-app-id", "gateway",
+      "-app-port", "8080",
+      "-dapr-http-port", "3500",
+      "-dapr-grpc-port", "50001",
+      "-placement-host-address", "placement:50006",
+      "-resources-path", "/dapr/components",
+      "-config", "/dapr/config.yaml"
+    ]
+    volumes:
+      - ./dapr/components:/dapr/components
+      - ./dapr/config.yaml:/dapr/config.yaml
+      - ./dapr/secrets.json:/dapr/secrets.json
+    depends_on:
+      - gateway
+    network_mode: "service:gateway"
+
+  # --- Invoice Service ---
+  invoice-service:
+    build:
+      context: .
+      dockerfile: src/ApprovalFlow.Invoice/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - approval-flow
+
+  invoice-service-dapr:
+    image: daprio/daprd:1.14.4
+    command: [
+      "./daprd",
+      "-app-id", "invoice-service",
+      "-app-port", "8080",
+      "-dapr-http-port", "3500",
+      "-dapr-grpc-port", "50001",
+      "-placement-host-address", "placement:50006",
+      "-resources-path", "/dapr/components",
+      "-config", "/dapr/config.yaml"
+    ]
+    volumes:
+      - ./dapr/components:/dapr/components
+      - ./dapr/config.yaml:/dapr/config.yaml
+      - ./dapr/secrets.json:/dapr/secrets.json
+    depends_on:
+      - invoice-service
+    network_mode: "service:invoice-service"
+
+  # --- Workflow Service ---
+  workflow-service:
+    build:
+      context: .
+      dockerfile: src/ApprovalFlow.Workflow/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - AUTONOMY_CEILING=250
+      - AUTONOMY_CONFIDENCE=0.80
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - approval-flow
+
+  workflow-service-dapr:
+    image: daprio/daprd:1.14.4
+    command: [
+      "./daprd",
+      "-app-id", "workflow-service",
+      "-app-port", "8080",
+      "-dapr-http-port", "3500",
+      "-dapr-grpc-port", "50001",
+      "-placement-host-address", "placement:50006",
+      "-resources-path", "/dapr/components",
+      "-config", "/dapr/config.yaml"
+    ]
+    volumes:
+      - ./dapr/components:/dapr/components
+      - ./dapr/config.yaml:/dapr/config.yaml
+      - ./dapr/secrets.json:/dapr/secrets.json
+    depends_on:
+      - workflow-service
+    network_mode: "service:workflow-service"
+
+  # --- Payment Service ---
+  payment-service:
+    build:
+      context: .
+      dockerfile: src/ApprovalFlow.Payment/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - approval-flow
+
+  payment-service-dapr:
+    image: daprio/daprd:1.14.4
+    command: [
+      "./daprd",
+      "-app-id", "payment-service",
+      "-app-port", "8080",
+      "-dapr-http-port", "3500",
+      "-dapr-grpc-port", "50001",
+      "-placement-host-address", "placement:50006",
+      "-resources-path", "/dapr/components",
+      "-config", "/dapr/config.yaml"
+    ]
+    volumes:
+      - ./dapr/components:/dapr/components
+      - ./dapr/config.yaml:/dapr/config.yaml
+      - ./dapr/secrets.json:/dapr/secrets.json
+    depends_on:
+      - payment-service
+    network_mode: "service:payment-service"
+
+  # --- UI ---
+  ui:
+    build:
+      context: .
+      dockerfile: src/ApprovalFlow.UI/Dockerfile
+    ports:
+      - "3000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - approval-flow
+
+networks:
+  approval-flow:
+    driver: bridge
