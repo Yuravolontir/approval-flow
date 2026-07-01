@@ -1,0 +1,40 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+project.lock.json
+.vs/
+
+## Rider
+.idea/
+
+## Environment
+.env
+*.local
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Obsidian
+.obsidian/
+
+## Dapr
+.dapr/
+
+## OpenSpec (planning artifacts, not needed in production)
+openspec/
+
+## Presentations (generated, large files)
+presentations/
+
+## Task files (assignment source, not part of deliverable)
+task/
+
+## Logs
+logs/
+*.log

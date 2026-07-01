@@ -1,0 +1,6 @@
+@ApprovalFlow.Payment_HostAddress = http://localhost:5213
+
+GET {{ApprovalFlow.Payment_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
