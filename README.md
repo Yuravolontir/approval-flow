@@ -1,5 +1,7 @@
 # ApprovalFlow
 
+[![CI](https://github.com/Yuravolontir/approval-flow/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/Yuravolontir/approval-flow/actions/workflows/ci.yml)
+
 AI-assisted invoice approval system with deterministic policy enforcement.
 
 ## What It Does
