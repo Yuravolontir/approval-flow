@@ -38,3 +38,6 @@ task/
 ## Logs
 logs/
 *.log
+
+## Tool caches
+.serena/
