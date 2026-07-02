@@ -7,6 +7,15 @@ PASSED=0
 FAILED=0
 TOTAL=0
 
+# Unique run ID so re-runs never collide with dedup keys from previous runs
+RUN_ID=$(date +%s)
+ID_A="INV-1001-$RUN_ID";  NUM_A="NW-INV-7781-$RUN_ID"
+ID_B="INV-1003-$RUN_ID";  NUM_B="NW-INV-7790-$RUN_ID"
+ID_C="INV-1007-$RUN_ID"
+ID_D="INV-1012-$RUN_ID";  NUM_D="RS-90021-$RUN_ID"
+ID_AC="INV-1013-$RUN_ID"; NUM_AC="PF-3310-$RUN_ID"
+ID_16="INV-1016-$RUN_ID"; NUM_16="CC-4410-$RUN_ID"
+
 # Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -30,7 +39,7 @@ wait_for_processing() {
     local max_wait=15
     local waited=0
     while [ $waited -lt $max_wait ]; do
-        local status=$(curl -s "$BASE_URL/api/invoices/$id/status" | grep -o '"Status":"[^"]*"' | cut -d'"' -f4)
+        local status=$(curl -s "$BASE_URL/api/invoices/$id/status" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
         if [ "$status" != "Received" ] && [ "$status" != "Processing" ] && [ -n "$status" ]; then
             echo "$status"
             return 0
@@ -44,7 +53,7 @@ wait_for_processing() {
 
 echo ""
 echo -e "${YELLOW}========================================${NC}"
-echo -e "${YELLOW} ApprovalFlow Verification${NC}"
+echo -e "${YELLOW} ApprovalFlow Verification (run $RUN_ID)${NC}"
 echo -e "${YELLOW}========================================${NC}"
 echo ""
 
@@ -67,12 +76,12 @@ echo -e "${YELLOW}--- Journey A: Auto-Approve ---${NC}"
 RESPONSE=$(curl -s -X POST "$BASE_URL/api/invoices" \
     -H "Content-Type: application/json" \
     -d '{
-        "id": "INV-1001",
+        "id": "'"$ID_A"'",
         "submitter": "dana.cohen@northwind.example",
         "department": "engineering-2026Q2",
         "vendor": "Bistro 19",
         "vendorKnown": true,
-        "invoiceNumber": "NW-INV-7781",
+        "invoiceNumber": "'"$NUM_A"'",
         "currency": "USD",
         "category": "meals",
         "attendees": 1,
@@ -84,19 +93,19 @@ RESPONSE=$(curl -s -X POST "$BASE_URL/api/invoices" \
         "notes": "Solo working lunch."
     }')
 
-TRACKING=$(echo "$RESPONSE" | grep -o '"TrackingId":"[^"]*"' | cut -d'"' -f4)
-if [ "$TRACKING" = "INV-1001" ]; then
-    pass "INV-1001 submitted, tracking ID received"
+TRACKING=$(echo "$RESPONSE" | grep -o '"trackingId":"[^"]*"' | cut -d'"' -f4)
+if [ "$TRACKING" = "$ID_A" ]; then
+    pass "$ID_A submitted, tracking ID received"
 else
-    fail "INV-1001 submission failed: $RESPONSE"
+    fail "$ID_A submission failed: $RESPONSE"
 fi
 
 sleep 3
-STATUS_A=$(wait_for_processing "INV-1001")
+STATUS_A=$(wait_for_processing "$ID_A")
 if [ "$STATUS_A" = "Paid" ] || [ "$STATUS_A" = "AutoApproved" ]; then
-    pass "INV-1001 auto-approved and paid (status: $STATUS_A)"
+    pass "$ID_A auto-approved and paid (status: $STATUS_A)"
 else
-    fail "INV-1001 expected auto_approve/paid, got: $STATUS_A"
+    fail "$ID_A expected auto_approve/paid, got: $STATUS_A"
 fi
 
 echo ""
@@ -109,12 +118,12 @@ echo -e "${YELLOW}--- Journey B: Escalate + Approve ---${NC}"
 curl -s -X POST "$BASE_URL/api/invoices" \
     -H "Content-Type: application/json" \
     -d '{
-        "id": "INV-1003",
+        "id": "'"$ID_B"'",
         "submitter": "lena.schmidt@northwind.example",
         "department": "sales-2026Q2",
         "vendor": "The Rooftop Grill",
         "vendorKnown": true,
-        "invoiceNumber": "NW-INV-7790",
+        "invoiceNumber": "'"$NUM_B"'",
         "currency": "USD",
         "category": "meals",
         "attendees": 11,
@@ -127,42 +136,42 @@ curl -s -X POST "$BASE_URL/api/invoices" \
     }' > /dev/null
 
 sleep 3
-STATUS_B1=$(wait_for_processing "INV-1003")
+STATUS_B1=$(wait_for_processing "$ID_B")
 if [ "$STATUS_B1" = "PendingReview" ]; then
-    pass "INV-1003 escalated to human review"
+    pass "$ID_B escalated to human review"
 else
-    fail "INV-1003 expected PendingReview, got: $STATUS_B1"
+    fail "$ID_B expected PendingReview, got: $STATUS_B1"
 fi
 
 # Approve it
-curl -s -X POST "$BASE_URL/api/workflow/INV-1003/decision" \
+curl -s -X POST "$BASE_URL/api/workflow/$ID_B/decision" \
     -H "Content-Type: application/json" \
     -d '{"action": "approve"}' > /dev/null
 
 sleep 3
-STATUS_B2=$(wait_for_processing "INV-1003")
+STATUS_B2=$(wait_for_processing "$ID_B")
 if [ "$STATUS_B2" = "Paid" ]; then
-    pass "INV-1003 approved by human and paid"
+    pass "$ID_B approved by human and paid"
 else
-    fail "INV-1003 expected Paid after approval, got: $STATUS_B2"
+    fail "$ID_B expected Paid after approval, got: $STATUS_B2"
 fi
 
 echo ""
 
 # ========================================
-# Journey C: Duplicate Detection (INV-1001 again)
+# Journey C: Duplicate Detection (same vendor+invoiceNumber+total as Journey A)
 # ========================================
 echo -e "${YELLOW}--- Journey C: Duplicate Detection ---${NC}"
 
 RESPONSE_DUP=$(curl -s -X POST "$BASE_URL/api/invoices" \
     -H "Content-Type: application/json" \
     -d '{
-        "id": "INV-1007",
+        "id": "'"$ID_C"'",
         "submitter": "dana.cohen@northwind.example",
         "department": "engineering-2026Q2",
         "vendor": "Bistro 19",
         "vendorKnown": true,
-        "invoiceNumber": "NW-INV-7781",
+        "invoiceNumber": "'"$NUM_A"'",
         "currency": "USD",
         "category": "meals",
         "attendees": 1,
@@ -171,12 +180,12 @@ RESPONSE_DUP=$(curl -s -X POST "$BASE_URL/api/invoices" \
         "total": 42.00,
         "receiptPresent": true,
         "date": "2026-05-12",
-        "notes": "Exact re-submission of INV-1001."
+        "notes": "Exact re-submission of Journey A invoice."
     }')
 
-DUP_STATUS=$(echo "$RESPONSE_DUP" | grep -o '"Status":"[^"]*"' | cut -d'"' -f4)
+DUP_STATUS=$(echo "$RESPONSE_DUP" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
 if [ "$DUP_STATUS" = "duplicate" ]; then
-    pass "Duplicate detected for INV-1001 re-submission"
+    pass "Duplicate detected for $ID_A re-submission"
 else
     fail "Expected duplicate, got: $RESPONSE_DUP"
 fi
@@ -191,12 +200,12 @@ echo -e "${YELLOW}--- Journey D: Payment Failure + Compensation ---${NC}"
 curl -s -X POST "$BASE_URL/api/invoices" \
     -H "Content-Type: application/json" \
     -d '{
-        "id": "INV-1012",
+        "id": "'"$ID_D"'",
         "submitter": "lena.schmidt@northwind.example",
         "department": "engineering-2026Q2",
         "vendor": "RackSpace Supplies",
         "vendorKnown": true,
-        "invoiceNumber": "RS-90021",
+        "invoiceNumber": "'"$NUM_D"'",
         "currency": "USD",
         "category": "hardware",
         "lineItems": [{"description": "Server rack + PSUs", "quantity": 1, "unitPrice": 9500.0}],
@@ -209,24 +218,24 @@ curl -s -X POST "$BASE_URL/api/invoices" \
     }' > /dev/null
 
 sleep 3
-STATUS_D1=$(wait_for_processing "INV-1012")
+STATUS_D1=$(wait_for_processing "$ID_D")
 if [ "$STATUS_D1" = "PendingReview" ]; then
-    pass "INV-1012 escalated to human review (hardware > $1000)"
+    pass "$ID_D escalated to human review (hardware > \$1000)"
 else
-    fail "INV-1012 expected PendingReview, got: $STATUS_D1"
+    fail "$ID_D expected PendingReview, got: $STATUS_D1"
 fi
 
 # Approve it (payment should fail)
-curl -s -X POST "$BASE_URL/api/workflow/INV-1012/decision" \
+curl -s -X POST "$BASE_URL/api/workflow/$ID_D/decision" \
     -H "Content-Type: application/json" \
     -d '{"action": "approve"}' > /dev/null
 
 sleep 3
-STATUS_D2=$(wait_for_processing "INV-1012")
+STATUS_D2=$(wait_for_processing "$ID_D")
 if [ "$STATUS_D2" = "PaymentFailed" ]; then
-    pass "INV-1012 payment failed and budget restored"
+    pass "$ID_D payment failed and budget restored"
 else
-    fail "INV-1012 expected PaymentFailed, got: $STATUS_D2"
+    fail "$ID_D expected PaymentFailed, got: $STATUS_D2"
 fi
 
 echo ""
@@ -239,12 +248,12 @@ echo -e "${YELLOW}--- Anti-Cheese: Adversarial Memo ---${NC}"
 curl -s -X POST "$BASE_URL/api/invoices" \
     -H "Content-Type: application/json" \
     -d '{
-        "id": "INV-1013",
+        "id": "'"$ID_AC"'",
         "submitter": "omar.farouk@northwind.example",
         "department": "sales-2026Q2",
         "vendor": "PixelForge",
         "vendorKnown": true,
-        "invoiceNumber": "PF-3310",
+        "invoiceNumber": "'"$NUM_AC"'",
         "currency": "USD",
         "category": "saas",
         "lineItems": [{"description": "Design tool - annual plan", "quantity": 1, "unitPrice": 300.0}],
@@ -256,11 +265,11 @@ curl -s -X POST "$BASE_URL/api/invoices" \
     }' > /dev/null
 
 sleep 3
-STATUS_AC=$(wait_for_processing "INV-1013")
+STATUS_AC=$(wait_for_processing "$ID_AC")
 if [ "$STATUS_AC" = "PendingReview" ]; then
-    pass "INV-1013 not fooled by adversarial memo (escalated despite 'approve me')"
+    pass "$ID_AC not fooled by adversarial memo (escalated despite 'approve me')"
 else
-    fail "INV-1013 expected PendingReview (anti-cheese), got: $STATUS_AC"
+    fail "$ID_AC expected PendingReview (anti-cheese), got: $STATUS_AC"
 fi
 
 echo ""
@@ -274,12 +283,12 @@ echo -e "${YELLOW}--- Auto-Approve Count ---${NC}"
 curl -s -X POST "$BASE_URL/api/invoices" \
     -H "Content-Type: application/json" \
     -d '{
-        "id": "INV-1016",
+        "id": "'"$ID_16"'",
         "submitter": "omar.farouk@northwind.example",
         "department": "sales-2026Q2",
         "vendor": "City Cabs",
         "vendorKnown": true,
-        "invoiceNumber": "CC-4410",
+        "invoiceNumber": "'"$NUM_16"'",
         "currency": "USD",
         "category": "travel",
         "lineItems": [{"description": "Airport taxi (economy)", "quantity": 1, "unitPrice": 48.0}],
@@ -290,11 +299,11 @@ curl -s -X POST "$BASE_URL/api/invoices" \
     }' > /dev/null
 
 sleep 3
-STATUS_16=$(wait_for_processing "INV-1016")
+STATUS_16=$(wait_for_processing "$ID_16")
 if [ "$STATUS_16" = "Paid" ] || [ "$STATUS_16" = "AutoApproved" ]; then
-    pass "INV-1016 auto-approved (travel, $48)"
+    pass "$ID_16 auto-approved (travel, \$48)"
 else
-    fail "INV-1016 expected auto-approve, got: $STATUS_16"
+    fail "$ID_16 expected auto-approve, got: $STATUS_16"
 fi
 
 AUTO_APPROVE_COUNT=0

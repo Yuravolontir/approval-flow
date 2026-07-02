@@ -376,7 +376,7 @@ static async Task UpdateInvoiceStatus(DaprClient dapr, string invoiceId, Invoice
 
     try
     {
-        await dapr.InvokeMethodAsync("invoice-service", $"invoices/{invoiceId}/status", statusUpdate);
+        await dapr.InvokeMethodAsync(HttpMethod.Put, "invoice-service", $"invoices/{invoiceId}/status", statusUpdate);
     }
     catch
     {

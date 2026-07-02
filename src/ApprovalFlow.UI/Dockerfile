@@ -5,6 +5,7 @@ EXPOSE 8080
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 COPY ["src/ApprovalFlow.UI/ApprovalFlow.UI.csproj", "src/ApprovalFlow.UI/"]
+COPY ["src/ApprovalFlow.Shared/ApprovalFlow.Shared.csproj", "src/ApprovalFlow.Shared/"]
 RUN dotnet restore "src/ApprovalFlow.UI/ApprovalFlow.UI.csproj"
 COPY . .
 WORKDIR "/src/src/ApprovalFlow.UI"
