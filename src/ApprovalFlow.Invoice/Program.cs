@@ -52,7 +52,7 @@ app.MapPost("/invoices", async (InvoiceDto invoice, DaprClient dapr, HttpContext
         return Results.Ok(new SubmitInvoiceResponse
         {
             TrackingId = invoice.Id,
-            Status = "duplicate",
+            Status = InvoiceStatus.Duplicate.ToString(),
             OriginalId = existingId
         });
     }
@@ -87,7 +87,7 @@ app.MapPost("/invoices", async (InvoiceDto invoice, DaprClient dapr, HttpContext
     return Results.Accepted($"/invoices/{invoice.Id}/status", new SubmitInvoiceResponse
     {
         TrackingId = invoice.Id,
-        Status = "received"
+        Status = InvoiceStatus.Received.ToString()
     });
 });
 

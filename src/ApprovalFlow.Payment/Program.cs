@@ -25,36 +25,49 @@ if (app.Environment.IsDevelopment())
 // Initialize budgets on startup
 app.Lifetime.ApplicationStarted.Register(async () =>
 {
-    await Task.Delay(3000); // Wait for Dapr sidecar
-    try
+    // Poll until the Dapr sidecar is ready instead of a blind delay.
+    // Seeding is idempotent (skips existing budgets), so retrying the whole loop is safe.
+    const int maxAttempts = 30;
+    var dapr = app.Services.GetRequiredService<DaprClient>();
+    var budgets = new Dictionary<string, decimal>
     {
-        var dapr = app.Services.GetRequiredService<DaprClient>();
-        var budgets = new Dictionary<string, decimal>
-        {
-            ["marketing-2026Q2"] = 1000.0m,
-            ["engineering-2026Q2"] = 50000.0m,
-            ["sales-2026Q2"] = 20000.0m
-        };
+        ["marketing-2026Q2"] = 1000.0m,
+        ["engineering-2026Q2"] = 50000.0m,
+        ["sales-2026Q2"] = 20000.0m
+    };
 
-        foreach (var (dept, amount) in budgets)
-        {
-            var existing = await dapr.GetStateAsync<BudgetState>(DaprComponents.StateStore, $"budget:{dept}");
-            if (existing == null)
-            {
-                await dapr.SaveStateAsync(DaprComponents.StateStore, $"budget:{dept}", new BudgetState
-                {
-                    Department = dept,
-                    TotalBudget = amount,
-                    Available = amount,
-                    Reservations = new Dictionary<string, decimal>()
-                });
-                Log.Information("Initialized budget for {Department}: {Amount:C}", dept, amount);
-            }
-        }
-    }
-    catch (Exception ex)
+    for (var attempt = 1; attempt <= maxAttempts; attempt++)
     {
-        Log.Warning(ex, "Failed to initialize budgets (Dapr may not be ready yet)");
+        try
+        {
+            foreach (var (dept, amount) in budgets)
+            {
+                var existing = await dapr.GetStateAsync<BudgetState>(DaprComponents.StateStore, $"budget:{dept}");
+                if (existing == null)
+                {
+                    await dapr.SaveStateAsync(DaprComponents.StateStore, $"budget:{dept}", new BudgetState
+                    {
+                        Department = dept,
+                        TotalBudget = amount,
+                        Available = amount,
+                        Reservations = new Dictionary<string, decimal>()
+                    });
+                    Log.Information("Initialized budget for {Department}: {Amount:C}", dept, amount);
+                }
+            }
+            Log.Information("Budget initialization complete after {Attempt} attempt(s)", attempt);
+            return;
+        }
+        catch (Exception ex) when (attempt < maxAttempts)
+        {
+            Log.Warning("Budget init attempt {Attempt}/{MaxAttempts} failed ({Error}), retrying in 1s",
+                attempt, maxAttempts, ex.Message);
+            await Task.Delay(TimeSpan.FromSeconds(1));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Budget seeding FAILED after {MaxAttempts} attempts — budgets missing", maxAttempts);
+        }
     }
 });
 

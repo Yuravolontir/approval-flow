@@ -184,7 +184,7 @@ RESPONSE_DUP=$(curl -s -X POST "$BASE_URL/api/invoices" \
     }')
 
 DUP_STATUS=$(echo "$RESPONSE_DUP" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
-if [ "$DUP_STATUS" = "duplicate" ]; then
+if [ "$DUP_STATUS" = "Duplicate" ]; then
     pass "Duplicate detected for $ID_A re-submission"
 else
     fail "Expected duplicate, got: $RESPONSE_DUP"

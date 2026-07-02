@@ -109,6 +109,11 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       - AUTONOMY_CEILING=250
       - AUTONOMY_CONFIDENCE=0.80
+      # LLM config comes from .env (gitignored); defaults keep the offline stub (CI has no .env)
+      - LLM_PROVIDER=${LLM_PROVIDER:-stub}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-anthropic/claude-sonnet-4-20250514}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://openrouter.ai/api/v1}
     depends_on:
       redis:
         condition: service_healthy

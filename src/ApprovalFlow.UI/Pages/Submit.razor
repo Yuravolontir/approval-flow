@@ -8,7 +8,7 @@
 
 @if (result != null)
 {
-    <div class="alert @(result.Status == "duplicate" ? "alert-warning" : "alert-success") mt-3">
+    <div class="alert @(result.Status == "Duplicate" ? "alert-warning" : "alert-success") mt-3">
         <strong>Tracking ID:</strong> @result.TrackingId<br />
         <strong>Status:</strong> @result.Status
         @if (!string.IsNullOrEmpty(result.OriginalId))

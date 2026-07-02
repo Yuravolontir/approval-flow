@@ -374,14 +374,27 @@ static async Task UpdateInvoiceStatus(DaprClient dapr, string invoiceId, Invoice
         Reason = reason
     };
 
-    try
+    // Invoice Service is the sole owner of status:{id} — never write it from here.
+    // Retry the invocation; on final failure log loudly instead of silently losing the update.
+    const int maxAttempts = 3;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++)
     {
-        await dapr.InvokeMethodAsync(HttpMethod.Put, "invoice-service", $"invoices/{invoiceId}/status", statusUpdate);
-    }
-    catch
-    {
-        // Fallback: write directly to state store
-        await dapr.SaveStateAsync(DaprComponents.StateStore, $"status:{invoiceId}", statusUpdate);
+        try
+        {
+            await dapr.InvokeMethodAsync(HttpMethod.Put, "invoice-service", $"invoices/{invoiceId}/status", statusUpdate);
+            return;
+        }
+        catch (Exception ex) when (attempt < maxAttempts)
+        {
+            Log.Warning(ex, "Status update for {InvoiceId} failed (attempt {Attempt}/{MaxAttempts}), retrying",
+                invoiceId, attempt, maxAttempts);
+            await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Status update for {InvoiceId} failed after {MaxAttempts} attempts — status NOT updated",
+                invoiceId, maxAttempts);
+        }
     }
 }
 
