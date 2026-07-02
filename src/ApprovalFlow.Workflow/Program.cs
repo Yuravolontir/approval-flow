@@ -30,6 +30,13 @@ builder.Services.AddSingleton(policyConfig);
 builder.Services.AddSingleton(new FxRates());
 builder.Services.AddSingleton<DeterministicRouter>();
 
+// Saga dependencies — thin Dapr wrappers behind interfaces (unit-testable orchestrator)
+builder.Services.AddSingleton<IPaymentClient, DaprPaymentClient>();
+builder.Services.AddSingleton<IWorkflowStateStore, DaprWorkflowStateStore>();
+builder.Services.AddSingleton<IInvoiceStatusPublisher>(sp =>
+    new RetryingInvoiceStatusPublisher(new DaprInvoiceStatusPublisher(sp.GetRequiredService<DaprClient>())));
+builder.Services.AddSingleton<SagaOrchestrator>();
+
 // LLM Client — use Stub by default, OpenRouter when configured
 var llmProvider = builder.Configuration["LLM_PROVIDER"] ?? "stub";
 if (llmProvider == "openrouter")
@@ -75,7 +82,8 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "work
 // Subscribe to invoice.submitted via Dapr pub/sub
 app.MapPost("/invoice-submitted",
     [Topic(DaprComponents.PubSub, DaprComponents.InvoiceSubmittedTopic)]
-    async (InvoiceSubmittedEvent evt, DaprClient dapr, ILlmClient llm, DeterministicRouter router) =>
+    async (InvoiceSubmittedEvent evt, DaprClient dapr, ILlmClient llm, DeterministicRouter router,
+        SagaOrchestrator saga, IInvoiceStatusPublisher statusPublisher) =>
 {
     var correlationId = evt.CorrelationId;
     var log = Log.ForContext("CorrelationId", correlationId);
@@ -128,7 +136,7 @@ app.MapPost("/invoice-submitted",
             await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{evt.InvoiceId}", state);
 
             // Start payment saga
-            await ExecutePaymentSaga(evt.InvoiceId, evt.Invoice, state, dapr, correlationId, log);
+            await saga.ExecuteAsync(evt.InvoiceId, evt.Invoice, state, correlationId);
             break;
 
         case RouteDecision.HumanReview:
@@ -145,21 +153,21 @@ app.MapPost("/invoice-submitted",
             }
 
             // Update invoice status
-            await UpdateInvoiceStatus(dapr, evt.InvoiceId, InvoiceStatus.PendingReview, routerResult.Reason);
+            await statusPublisher.PublishStatusAsync(evt.InvoiceId, InvoiceStatus.PendingReview, routerResult.Reason);
             log.Information("Invoice {InvoiceId} queued for human review", evt.InvoiceId);
             break;
 
         case RouteDecision.Reject:
             state.Status = InvoiceStatus.Rejected;
             await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{evt.InvoiceId}", state);
-            await UpdateInvoiceStatus(dapr, evt.InvoiceId, InvoiceStatus.Rejected, routerResult.Reason);
+            await statusPublisher.PublishStatusAsync(evt.InvoiceId, InvoiceStatus.Rejected, routerResult.Reason);
             log.Information("Invoice {InvoiceId} rejected: {Reason}", evt.InvoiceId, routerResult.Reason);
             break;
 
         case RouteDecision.Duplicate:
             state.Status = InvoiceStatus.Duplicate;
             await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{evt.InvoiceId}", state);
-            await UpdateInvoiceStatus(dapr, evt.InvoiceId, InvoiceStatus.Duplicate, routerResult.Reason);
+            await statusPublisher.PublishStatusAsync(evt.InvoiceId, InvoiceStatus.Duplicate, routerResult.Reason);
             break;
     }
 
@@ -168,7 +176,8 @@ app.MapPost("/invoice-submitted",
 
 // POST /workflow/{id}/decision — HITL approve/reject/request_info
 app.MapPost("/workflow/{id}/decision",
-    async (string id, HitlDecisionRequest request, DaprClient dapr) =>
+    async (string id, HitlDecisionRequest request, DaprClient dapr,
+        SagaOrchestrator saga, IInvoiceStatusPublisher statusPublisher) =>
 {
     var correlationId = Guid.NewGuid().ToString();
     var log = Log.ForContext("CorrelationId", correlationId);
@@ -191,14 +200,14 @@ app.MapPost("/workflow/{id}/decision",
             await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{id}", state);
 
             // Start payment saga
-            await ExecutePaymentSaga(id, state.Invoice, state, dapr, correlationId, log);
+            await saga.ExecuteAsync(id, state.Invoice, state, correlationId);
             break;
 
         case "reject":
             state.HitlStatus = HitlStatus.Rejected;
             state.Status = InvoiceStatus.Rejected;
             await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{id}", state);
-            await UpdateInvoiceStatus(dapr, id, InvoiceStatus.Rejected, $"Rejected by human reviewer. {request.Comment ?? ""}");
+            await statusPublisher.PublishStatusAsync(id, InvoiceStatus.Rejected, $"Rejected by human reviewer. {request.Comment ?? ""}");
             log.Information("Invoice {InvoiceId} rejected by human", id);
             break;
 
@@ -206,7 +215,7 @@ app.MapPost("/workflow/{id}/decision",
             state.HitlStatus = HitlStatus.InfoRequested;
             state.Status = InvoiceStatus.PendingReview;
             await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{id}", state);
-            await UpdateInvoiceStatus(dapr, id, InvoiceStatus.PendingReview, $"Additional information requested: {request.Comment ?? ""}");
+            await statusPublisher.PublishStatusAsync(id, InvoiceStatus.PendingReview, $"Additional information requested: {request.Comment ?? ""}");
             log.Information("Info requested for {InvoiceId}", id);
             break;
 
@@ -257,173 +266,3 @@ app.MapGet("/dashboard", async (DaprClient dapr) =>
 });
 
 app.Run();
-
-// === Helper functions ===
-
-static async Task ExecutePaymentSaga(string invoiceId, InvoiceDto invoice, WorkflowState state,
-    DaprClient dapr, string correlationId, Serilog.ILogger log)
-{
-    var fxRates = new FxRates();
-    var usdAmount = fxRates.ConvertToUsd(invoice.Total, invoice.Currency);
-
-    try
-    {
-        // Step 1: Reserve budget
-        log.Information("Saga step 1: Reserving budget for {InvoiceId} ({Amount:C})", invoiceId, usdAmount);
-        var reserveRequest = new BudgetReserveRequest
-        {
-            Department = invoice.Department,
-            Amount = usdAmount,
-            InvoiceId = invoiceId,
-            IdempotencyKey = $"reserve:{invoiceId}"
-        };
-
-        var reserveResponse = await dapr.InvokeMethodAsync<BudgetReserveRequest, BudgetReserveResponse>(
-            "payment-service", "budget/reserve", reserveRequest);
-
-        if (!reserveResponse.Success)
-        {
-            log.Warning("Budget reservation failed for {InvoiceId}: {Error}", invoiceId, reserveResponse.Error);
-            state.Status = InvoiceStatus.PaymentFailed;
-            state.CurrentSagaStep = SagaStep.Failed;
-            await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{invoiceId}", state);
-            await UpdateInvoiceStatus(dapr, invoiceId, InvoiceStatus.PaymentFailed, $"Budget reservation failed: {reserveResponse.Error}");
-            return;
-        }
-
-        state.ReservationId = reserveResponse.ReservationId;
-        state.CurrentSagaStep = SagaStep.BudgetReserved;
-        await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{invoiceId}", state);
-
-        // Step 2: Execute payment
-        log.Information("Saga step 2: Executing payment for {InvoiceId}", invoiceId);
-        var payRequest = new PaymentExecuteRequest
-        {
-            InvoiceId = invoiceId,
-            ReservationId = reserveResponse.ReservationId,
-            Amount = usdAmount,
-            Scenario = invoice.Scenario
-        };
-
-        var payResponse = await dapr.InvokeMethodAsync<PaymentExecuteRequest, PaymentExecuteResponse>(
-            "payment-service", "payment/execute", payRequest);
-
-        if (!payResponse.Success)
-        {
-            // COMPENSATE: Release budget reservation
-            log.Warning("Payment failed for {InvoiceId}: {Error}. Compensating...", invoiceId, payResponse.Error);
-            state.CurrentSagaStep = SagaStep.Compensating;
-            await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{invoiceId}", state);
-
-            await dapr.InvokeMethodAsync("payment-service", $"budget/release",
-                new { reservationId = reserveResponse.ReservationId, department = invoice.Department, amount = usdAmount });
-
-            state.Status = InvoiceStatus.PaymentFailed;
-            state.CurrentSagaStep = SagaStep.Compensated;
-            await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{invoiceId}", state);
-            await UpdateInvoiceStatus(dapr, invoiceId, InvoiceStatus.PaymentFailed, $"Payment failed, budget released: {payResponse.Error}");
-            log.Information("Compensation complete for {InvoiceId}, budget restored", invoiceId);
-            return;
-        }
-
-        state.CurrentSagaStep = SagaStep.PaymentExecuted;
-
-        // Step 3: Update status to paid
-        state.Status = InvoiceStatus.Paid;
-        state.CurrentSagaStep = SagaStep.StatusUpdated;
-        await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{invoiceId}", state);
-        await UpdateInvoiceStatus(dapr, invoiceId, InvoiceStatus.Paid, "Payment completed successfully.");
-
-        // Update dashboard stats
-        await UpdateDashboardStats(dapr, state);
-
-        log.Information("Invoice {InvoiceId} paid successfully", invoiceId);
-    }
-    catch (Exception ex)
-    {
-        log.Error(ex, "Saga error for {InvoiceId}, attempting compensation", invoiceId);
-
-        // Compensate if we have a reservation
-        if (!string.IsNullOrEmpty(state.ReservationId))
-        {
-            try
-            {
-                await dapr.InvokeMethodAsync("payment-service", $"budget/release",
-                    new { reservationId = state.ReservationId, department = invoice.Department, amount = fxRates.ConvertToUsd(invoice.Total, invoice.Currency) });
-                log.Information("Emergency compensation complete for {InvoiceId}", invoiceId);
-            }
-            catch (Exception compEx)
-            {
-                log.Error(compEx, "Emergency compensation FAILED for {InvoiceId}", invoiceId);
-            }
-        }
-
-        state.Status = InvoiceStatus.PaymentFailed;
-        state.CurrentSagaStep = SagaStep.Failed;
-        await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{invoiceId}", state);
-        await UpdateInvoiceStatus(dapr, invoiceId, InvoiceStatus.PaymentFailed, $"Payment processing error: {ex.Message}");
-    }
-}
-
-static async Task UpdateInvoiceStatus(DaprClient dapr, string invoiceId, InvoiceStatus status, string reason)
-{
-    var statusUpdate = new InvoiceStatusResponse
-    {
-        InvoiceId = invoiceId,
-        Status = status.ToString(),
-        Reason = reason
-    };
-
-    // Invoice Service is the sole owner of status:{id} — never write it from here.
-    // Retry the invocation; on final failure log loudly instead of silently losing the update.
-    const int maxAttempts = 3;
-    for (var attempt = 1; attempt <= maxAttempts; attempt++)
-    {
-        try
-        {
-            await dapr.InvokeMethodAsync(HttpMethod.Put, "invoice-service", $"invoices/{invoiceId}/status", statusUpdate);
-            return;
-        }
-        catch (Exception ex) when (attempt < maxAttempts)
-        {
-            Log.Warning(ex, "Status update for {InvoiceId} failed (attempt {Attempt}/{MaxAttempts}), retrying",
-                invoiceId, attempt, maxAttempts);
-            await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt));
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Status update for {InvoiceId} failed after {MaxAttempts} attempts — status NOT updated",
-                invoiceId, maxAttempts);
-        }
-    }
-}
-
-static async Task UpdateDashboardStats(DaprClient dapr, WorkflowState state)
-{
-    var fxRates = new FxRates();
-    var stats = await dapr.GetStateAsync<DashboardResponse>(DaprComponents.StateStore, "dashboard:stats")
-        ?? new DashboardResponse();
-
-    stats.TotalProcessed++;
-    var usdAmount = fxRates.ConvertToUsd(state.Invoice.Total, state.Invoice.Currency);
-
-    switch (state.Route)
-    {
-        case RouteDecision.AutoApprove:
-            stats.AutoApproved++;
-            stats.TotalAutoApprovedAmount += usdAmount;
-            break;
-        case RouteDecision.HumanReview:
-            stats.HumanReviewed++;
-            stats.TotalHumanReviewedAmount += usdAmount;
-            break;
-        case RouteDecision.Reject:
-            stats.Rejected++;
-            break;
-        case RouteDecision.Duplicate:
-            stats.Duplicates++;
-            break;
-    }
-
-    await dapr.SaveStateAsync(DaprComponents.StateStore, "dashboard:stats", stats);
-}
