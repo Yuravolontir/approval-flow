@@ -43,15 +43,18 @@ if (llmProvider == "openrouter")
 {
     var apiKey = builder.Configuration["LLM_API_KEY"] ?? "";
     var baseUrl = builder.Configuration["LLM_BASE_URL"] ?? "https://openrouter.ai/api/v1";
-    var model = builder.Configuration["LLM_MODEL"] ?? "anthropic/claude-sonnet-4-20250514";
+    var model = builder.Configuration["LLM_MODEL"] ?? "anthropic/claude-sonnet-4";
 
-    builder.Services.AddHttpClient<ILlmClient, OpenRouterLlmClient>((sp, http) =>
+    // NAMED client (not typed): the singleton below resolves it by this same name,
+    // so BaseAddress/headers are actually applied to the client it receives.
+    builder.Services.AddHttpClient(nameof(OpenRouterLlmClient), http =>
     {
         http.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         http.DefaultRequestHeaders.Add("HTTP-Referer", "https://approvalflow.local");
         http.DefaultRequestHeaders.Add("X-Title", "ApprovalFlow");
-    }).Services.AddSingleton<ILlmClient>(sp =>
+    });
+    builder.Services.AddSingleton<ILlmClient>(sp =>
     {
         var factory = sp.GetRequiredService<IHttpClientFactory>();
         var http = factory.CreateClient(nameof(OpenRouterLlmClient));

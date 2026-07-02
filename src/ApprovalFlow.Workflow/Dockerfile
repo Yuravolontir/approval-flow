@@ -14,5 +14,7 @@ RUN dotnet publish -c Release -o /app/publish --no-restore
 FROM base AS final
 WORKDIR /app
 COPY --from=build /app/publish .
+# Expense policy text for the LLM agent (read at startup from content root)
+COPY policy.md .
 ENV ASPNETCORE_URLS=http://+:8080
 ENTRYPOINT ["dotnet", "ApprovalFlow.Workflow.dll"]

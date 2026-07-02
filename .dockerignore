@@ -11,3 +11,4 @@ task/
 .obsidian/
 *.md
 !src/**/*.md
+!policy.md
