@@ -1,9 +1,8 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using ApprovalFlow.Shared.Constants;
 using ApprovalFlow.Shared.Events;
 using ApprovalFlow.Shared.Models;
+using ApprovalFlow.Shared.Utils;
 using Dapr.Client;
 using Serilog;
 
@@ -42,7 +41,7 @@ app.MapPost("/invoices", async (InvoiceDto invoice, DaprClient dapr, HttpContext
            invoice.Id, invoice.Vendor, invoice.Total, invoice.Currency);
 
     // Dedup check: hash(vendor + invoiceNumber + total)
-    var dedupKey = ComputeDedupKey(invoice.Vendor, invoice.InvoiceNumber, invoice.Total);
+    var dedupKey = DedupKey.Compute(invoice.Vendor, invoice.InvoiceNumber, invoice.Total);
     var existingId = await dapr.GetStateAsync<string>(DaprComponents.StateStore, $"dedup:{dedupKey}");
 
     if (!string.IsNullOrEmpty(existingId))
@@ -114,13 +113,6 @@ app.MapPut("/invoices/{id}/status", async (string id, InvoiceStatusResponse stat
 });
 
 app.Run();
-
-static string ComputeDedupKey(string vendor, string invoiceNumber, decimal total)
-{
-    var input = $"{vendor.ToLowerInvariant()}|{invoiceNumber.ToLowerInvariant()}|{total:F2}";
-    var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-    return Convert.ToHexString(hash)[..16];
-}
 
 public static class SerilogExtensions
 {

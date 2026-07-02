@@ -26,3 +26,39 @@ jobs:
 
       - name: Test
         run: dotnet test ApprovalFlow.sln --no-build --configuration Release --verbosity normal
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start stack (stub LLM, no secrets)
+        run: docker compose up -d --build
+
+      - name: Wait for gateway health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/health > /dev/null 2>&1; then
+              echo "Gateway healthy after $((i * 5))s"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Gateway never became healthy"
+          exit 1
+
+      - name: Settle (budget seeding, sidecar warm-up)
+        run: sleep 10
+
+      - name: Run verification journeys
+        run: bash scripts/verify.sh
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
