@@ -34,9 +34,11 @@ builder.Services.AddSingleton<DeterministicRouter>();
 builder.Services.AddSingleton<IPaymentClient, DaprPaymentClient>();
 builder.Services.AddSingleton<IWorkflowStateStore, DaprWorkflowStateStore>();
 builder.Services.AddSingleton<IIdempotencyStore, DaprIdempotencyStore>();
+builder.Services.AddSingleton<ISagaIndexStore, DaprSagaIndexStore>();
 builder.Services.AddSingleton<IInvoiceStatusPublisher>(sp =>
     new RetryingInvoiceStatusPublisher(new DaprInvoiceStatusPublisher(sp.GetRequiredService<DaprClient>())));
 builder.Services.AddSingleton<SagaOrchestrator>();
+builder.Services.AddHostedService<SagaRecoveryService>();
 
 // LLM Client — use Stub by default, OpenRouter when configured
 var llmProvider = builder.Configuration["LLM_PROVIDER"] ?? "stub";

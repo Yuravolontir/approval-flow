@@ -13,12 +13,16 @@ public class SagaOrchestrator(
     IPaymentClient payments,
     IWorkflowStateStore stateStore,
     IInvoiceStatusPublisher statusPublisher,
-    FxRates fxRates)
+    FxRates fxRates,
+    ISagaIndexStore index)
 {
     public async Task ExecuteAsync(string invoiceId, InvoiceDto invoice, WorkflowState state, string correlationId)
     {
         var log = Log.ForContext("CorrelationId", correlationId);
         var usdAmount = fxRates.ConvertToUsd(invoice.Total, invoice.Currency);
+        var isBudgetReservedResume = state.CurrentSagaStep == SagaStep.BudgetReserved;
+
+        await index.AddInFlightAsync(invoiceId);
 
         try
         {
@@ -40,12 +44,25 @@ public class SagaOrchestrator(
                 await stateStore.SaveWorkflowAsync(state);
                 await statusPublisher.PublishStatusAsync(invoiceId, InvoiceStatus.PaymentFailed,
                     $"Budget reservation failed: {reserveResponse.Error}");
+                await RemoveInFlightAfterTerminalAsync(invoiceId, log);
                 return;
             }
 
             state.ReservationId = reserveResponse.ReservationId;
             state.CurrentSagaStep = SagaStep.BudgetReserved;
             await stateStore.SaveWorkflowAsync(state);
+
+            // TEST-ONLY fault injection: simulate a hard crash between reserve and pay so the
+            // recovery path can be proven on the live stack. Gated on an explicit scenario string,
+            // exactly like the existing "payment-failure" scenario hook. Never triggers in normal
+            // operation. Skip when recovery is already resuming a persisted BudgetReserved saga.
+            if (!isBudgetReservedResume &&
+                invoice.Scenario is not null &&
+                invoice.Scenario.Contains("crash-after-reserve"))
+            {
+                log.Warning("FAULT INJECTION: crashing after reserve for {InvoiceId}", invoiceId);
+                Environment.Exit(1);
+            }
 
             // Step 2: Execute payment
             log.Information("Saga step 2: Executing payment for {InvoiceId}", invoiceId);
@@ -61,17 +78,9 @@ public class SagaOrchestrator(
             {
                 // COMPENSATE: Release budget reservation
                 log.Warning("Payment failed for {InvoiceId}: {Error}. Compensating...", invoiceId, payResponse.Error);
-                state.CurrentSagaStep = SagaStep.Compensating;
-                await stateStore.SaveWorkflowAsync(state);
-
-                await payments.ReleaseBudgetAsync(reserveResponse.ReservationId, invoice.Department, usdAmount);
-
-                state.Status = InvoiceStatus.PaymentFailed;
-                state.CurrentSagaStep = SagaStep.Compensated;
-                await stateStore.SaveWorkflowAsync(state);
-                await statusPublisher.PublishStatusAsync(invoiceId, InvoiceStatus.PaymentFailed,
+                await CompleteCompensationAsync(state, reserveResponse.ReservationId, invoice.Department, usdAmount,
                     $"Payment failed, budget released: {payResponse.Error}");
-                log.Information("Compensation complete for {InvoiceId}, budget restored", invoiceId);
+                await RemoveInFlightAfterTerminalAsync(invoiceId, log);
                 return;
             }
 
@@ -87,6 +96,7 @@ public class SagaOrchestrator(
             await UpdateDashboardStatsAsync(state);
 
             log.Information("Invoice {InvoiceId} paid successfully", invoiceId);
+            await RemoveInFlightAfterTerminalAsync(invoiceId, log);
         }
         catch (Exception ex)
         {
@@ -111,6 +121,66 @@ public class SagaOrchestrator(
             await stateStore.SaveWorkflowAsync(state);
             await statusPublisher.PublishStatusAsync(invoiceId, InvoiceStatus.PaymentFailed,
                 $"Payment processing error: {ex.Message}");
+            await RemoveInFlightAfterTerminalAsync(invoiceId, log);
+        }
+    }
+
+    public async Task RecoverAsync(WorkflowState state, string correlationId)
+    {
+        var log = Log.ForContext("CorrelationId", correlationId);
+        var invoiceId = state.InvoiceId;
+
+        switch (state.CurrentSagaStep)
+        {
+            case SagaStep.BudgetReserved:
+                await ExecuteAsync(state.InvoiceId, state.Invoice, state, correlationId);
+                break;
+
+            case SagaStep.Compensating:
+                var usdAmount = fxRates.ConvertToUsd(state.Invoice.Total, state.Invoice.Currency);
+                await CompleteCompensationAsync(state, state.ReservationId ?? string.Empty, state.Invoice.Department, usdAmount,
+                    "Payment failed, budget released during recovery.");
+                await RemoveInFlightAfterTerminalAsync(invoiceId, log);
+                break;
+
+            case SagaStep.NotStarted:
+            case SagaStep.PaymentExecuted:
+            case SagaStep.StatusUpdated:
+            case SagaStep.Compensated:
+            case SagaStep.Failed:
+                await RemoveInFlightAfterTerminalAsync(invoiceId, log);
+                break;
+        }
+    }
+
+    private async Task CompleteCompensationAsync(
+        WorkflowState state,
+        string reservationId,
+        string department,
+        decimal usdAmount,
+        string reason)
+    {
+        state.CurrentSagaStep = SagaStep.Compensating;
+        await stateStore.SaveWorkflowAsync(state);
+
+        await payments.ReleaseBudgetAsync(reservationId, department, usdAmount);
+
+        state.Status = InvoiceStatus.PaymentFailed;
+        state.CurrentSagaStep = SagaStep.Compensated;
+        await stateStore.SaveWorkflowAsync(state);
+        await statusPublisher.PublishStatusAsync(state.InvoiceId, InvoiceStatus.PaymentFailed, reason);
+        Log.Information("Compensation complete for {InvoiceId}, budget restored", state.InvoiceId);
+    }
+
+    private async Task RemoveInFlightAfterTerminalAsync(string invoiceId, Serilog.ILogger log)
+    {
+        try
+        {
+            await index.RemoveInFlightAsync(invoiceId);
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "Could not remove {InvoiceId} from saga in-flight index", invoiceId);
         }
     }
 

@@ -41,12 +41,20 @@ internal class FakePaymentClient : IPaymentClient
 internal class FakeWorkflowStateStore : IWorkflowStateStore
 {
     public List<SagaStep> SavedSteps { get; } = new();
+    public Dictionary<string, WorkflowState> Workflows { get; } = new();
     public DashboardResponse? Stats { get; set; }
     public bool StatsSaved { get; private set; }
+
+    public Task<WorkflowState?> GetWorkflowAsync(string invoiceId)
+    {
+        Workflows.TryGetValue(invoiceId, out var state);
+        return Task.FromResult<WorkflowState?>(state);
+    }
 
     public Task SaveWorkflowAsync(WorkflowState state)
     {
         SavedSteps.Add(state.CurrentSagaStep);
+        Workflows[state.InvoiceId] = state;
         return Task.CompletedTask;
     }
 
@@ -76,9 +84,10 @@ public class SagaOrchestratorTests
     private readonly FakePaymentClient _payments = new();
     private readonly FakeWorkflowStateStore _stateStore = new();
     private readonly FakeStatusPublisher _publisher = new();
+    private readonly InMemorySagaIndexStore _index = new();
 
     private SagaOrchestrator CreateSaga() =>
-        new(_payments, _stateStore, _publisher, new FxRates());
+        new(_payments, _stateStore, _publisher, new FxRates(), _index);
 
     private static (InvoiceDto Invoice, WorkflowState State) CreateInvoice(decimal total = 100m)
     {
@@ -119,6 +128,7 @@ public class SagaOrchestratorTests
         Assert.Equal(1, _stateStore.Stats!.TotalProcessed);
         Assert.Equal(1, _stateStore.Stats.AutoApproved);
         Assert.Equal(100m, _stateStore.Stats.TotalAutoApprovedAmount);
+        Assert.DoesNotContain("inv-1", await _index.GetInFlightAsync());
     }
 
     [Fact]
@@ -137,6 +147,7 @@ public class SagaOrchestratorTests
         Assert.Equal(InvoiceStatus.PaymentFailed, published.Status);
         Assert.Contains("Insufficient budget", published.Reason);
         Assert.False(_stateStore.StatsSaved);
+        Assert.DoesNotContain("inv-1", await _index.GetInFlightAsync());
     }
 
     [Fact]
@@ -158,6 +169,7 @@ public class SagaOrchestratorTests
         Assert.Contains(SagaStep.Compensated, _stateStore.SavedSteps);
         var published = Assert.Single(_publisher.Published);
         Assert.Contains("budget released", published.Reason);
+        Assert.DoesNotContain("inv-1", await _index.GetInFlightAsync());
     }
 
     [Fact]

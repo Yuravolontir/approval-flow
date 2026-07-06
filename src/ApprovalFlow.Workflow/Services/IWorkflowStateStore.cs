@@ -9,6 +9,7 @@ namespace ApprovalFlow.Workflow.Services;
 /// </summary>
 public interface IWorkflowStateStore
 {
+    Task<WorkflowState?> GetWorkflowAsync(string invoiceId);
     Task SaveWorkflowAsync(WorkflowState state);
     Task<DashboardResponse?> GetDashboardStatsAsync();
     Task SaveDashboardStatsAsync(DashboardResponse stats);
@@ -16,6 +17,9 @@ public interface IWorkflowStateStore
 
 public class DaprWorkflowStateStore(DaprClient dapr) : IWorkflowStateStore
 {
+    public Task<WorkflowState?> GetWorkflowAsync(string invoiceId) =>
+        dapr.GetStateAsync<WorkflowState?>(DaprComponents.StateStore, $"workflow:{invoiceId}");
+
     public Task SaveWorkflowAsync(WorkflowState state) =>
         dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{state.InvoiceId}", state);
 
