@@ -33,6 +33,7 @@ builder.Services.AddSingleton<DeterministicRouter>();
 // Saga dependencies — thin Dapr wrappers behind interfaces (unit-testable orchestrator)
 builder.Services.AddSingleton<IPaymentClient, DaprPaymentClient>();
 builder.Services.AddSingleton<IWorkflowStateStore, DaprWorkflowStateStore>();
+builder.Services.AddSingleton<IIdempotencyStore, DaprIdempotencyStore>();
 builder.Services.AddSingleton<IInvoiceStatusPublisher>(sp =>
     new RetryingInvoiceStatusPublisher(new DaprInvoiceStatusPublisher(sp.GetRequiredService<DaprClient>())));
 builder.Services.AddSingleton<SagaOrchestrator>();
@@ -86,10 +87,16 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "work
 app.MapPost("/invoice-submitted",
     [Topic(DaprComponents.PubSub, DaprComponents.InvoiceSubmittedTopic)]
     async (InvoiceSubmittedEvent evt, DaprClient dapr, ILlmClient llm, DeterministicRouter router,
-        SagaOrchestrator saga, IInvoiceStatusPublisher statusPublisher) =>
+        SagaOrchestrator saga, IInvoiceStatusPublisher statusPublisher, IIdempotencyStore idempotency) =>
 {
     var correlationId = evt.CorrelationId;
     var log = Log.ForContext("CorrelationId", correlationId);
+
+    if (!await idempotency.TryClaimAsync($"invoice-submitted:{evt.InvoiceId}"))
+    {
+        log.Information("Duplicate delivery of {InvoiceId}; acking without reprocessing", evt.InvoiceId);
+        return Results.Ok();
+    }
 
     log.Information("Processing invoice {InvoiceId} from {Vendor}", evt.InvoiceId, evt.Invoice.Vendor);
 
