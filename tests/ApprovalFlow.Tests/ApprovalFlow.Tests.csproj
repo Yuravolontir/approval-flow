@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ApprovalFlow.Shared\ApprovalFlow.Shared.csproj" />
+    <ProjectReference Include="..\..\src\ApprovalFlow.Payment\ApprovalFlow.Payment.csproj" />
     <ProjectReference Include="..\..\src\ApprovalFlow.Workflow\ApprovalFlow.Workflow.csproj" />
   </ItemGroup>
 

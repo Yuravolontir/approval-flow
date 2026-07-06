@@ -14,6 +14,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog();
 builder.Services.AddDaprClient();
 builder.Services.AddOpenApi();
+builder.Services.AddSingleton<IBudgetStore, DaprBudgetStore>();
+builder.Services.AddSingleton<BudgetService>();
 
 var app = builder.Build();
 
@@ -74,76 +76,34 @@ app.Lifetime.ApplicationStarted.Register(async () =>
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "payment-service" }));
 
 // POST /budget/reserve — atomically reserve amount from department budget
-app.MapPost("/budget/reserve", async (BudgetReserveRequest request, DaprClient dapr) =>
+app.MapPost("/budget/reserve", async (BudgetReserveRequest request, BudgetService budgets) =>
 {
     var log = Log.ForContext("CorrelationId", request.InvoiceId);
     log.Information("Reserving {Amount:C} from {Department} for {InvoiceId}",
         request.Amount, request.Department, request.InvoiceId);
 
-    // Check idempotency
-    var existingReservation = await dapr.GetStateAsync<string>(DaprComponents.StateStore, $"idempotency:{request.IdempotencyKey}");
-    if (!string.IsNullOrEmpty(existingReservation))
-    {
-        log.Information("Idempotent reservation already exists: {ReservationId}", existingReservation);
-        return Results.Ok(new BudgetReserveResponse { ReservationId = existingReservation, Success = true });
-    }
-
-    var budget = await dapr.GetStateAsync<BudgetState>(DaprComponents.StateStore, $"budget:{request.Department}");
-    if (budget == null)
-    {
-        return Results.Ok(new BudgetReserveResponse { Success = false, Error = $"Department {request.Department} not found" });
-    }
-
-    if (budget.Available < request.Amount)
-    {
-        log.Warning("Insufficient budget for {Department}: available={Available:C}, requested={Amount:C}",
-            request.Department, budget.Available, request.Amount);
-        return Results.Ok(new BudgetReserveResponse
-        {
-            Success = false,
-            Error = $"Insufficient budget. Available: ${budget.Available:F2}, Requested: ${request.Amount:F2}"
-        });
-    }
-
-    var reservationId = $"R-{Guid.NewGuid().ToString("N")[..8].ToUpper()}";
-    budget.Available -= request.Amount;
-    budget.Reservations[reservationId] = request.Amount;
-
-    await dapr.SaveStateAsync(DaprComponents.StateStore, $"budget:{request.Department}", budget);
-    await dapr.SaveStateAsync(DaprComponents.StateStore, $"idempotency:{request.IdempotencyKey}", reservationId);
-
-    log.Information("Reserved {Amount:C} as {ReservationId}. Remaining: {Available:C}",
-        request.Amount, reservationId, budget.Available);
-
-    return Results.Ok(new BudgetReserveResponse { ReservationId = reservationId, Success = true });
+    var response = await budgets.ReserveAsync(request);
+    return Results.Ok(response);
 });
 
 // POST /budget/release — release reservation (compensation)
-app.MapPost("/budget/release", async (BudgetReleaseRequest request, DaprClient dapr) =>
+app.MapPost("/budget/release", async (BudgetReleaseRequest request, BudgetService budgets) =>
 {
     var log = Log.ForContext("CorrelationId", request.ReservationId);
     log.Information("Releasing reservation {ReservationId} for {Department}", request.ReservationId, request.Department);
 
-    var budget = await dapr.GetStateAsync<BudgetState>(DaprComponents.StateStore, $"budget:{request.Department}");
-    if (budget == null)
+    var result = await budgets.ReleaseAsync(request);
+    if (!result.Success && result.Error == $"Department {request.Department} not found")
     {
         return Results.NotFound(new { error = $"Department {request.Department} not found" });
     }
 
-    if (budget.Reservations.TryGetValue(request.ReservationId, out var reservedAmount))
+    if (!result.Success)
     {
-        budget.Available += reservedAmount;
-        budget.Reservations.Remove(request.ReservationId);
-        await dapr.SaveStateAsync(DaprComponents.StateStore, $"budget:{request.Department}", budget);
-
-        log.Information("Released {Amount:C} from {ReservationId}. Available now: {Available:C}",
-            reservedAmount, request.ReservationId, budget.Available);
-
-        return Results.Ok(new { success = true, releasedAmount = reservedAmount, available = budget.Available });
+        return Results.Ok(new { success = false, error = result.Error });
     }
 
-    log.Warning("Reservation {ReservationId} not found (already released?)", request.ReservationId);
-    return Results.Ok(new { success = true, releasedAmount = 0m, available = budget.Available });
+    return Results.Ok(new { success = true, releasedAmount = result.ReleasedAmount, available = result.Available });
 });
 
 // POST /payment/execute — simulate payment
