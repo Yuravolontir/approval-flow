@@ -42,31 +42,43 @@ These rules **always** force human review, regardless of amount or confidence:
 
 ## Evidence from Test Fixtures
 
-From our 19 test invoices:
+From our 20 test invoices:
 
-### Auto-Approved (no human needed)
-| Invoice | Amount | Category | Why auto-approved |
-|---------|--------|----------|-------------------|
-| INV-1001 | $42.50 | meal | Below ceiling, known vendor, all info present |
-| INV-1002 | $99.00 | saas | Monthly SaaS < $200, known vendor |
-| INV-1016 | $48.00 | meal | Simple team meal, all rules pass |
-| INV-1017 | $180.00 | travel | Standard domestic travel, below ceiling |
+### Auto-Approved (4)
+| Invoice | Amount | Category | Trigger/Reason |
+|---------|--------|----------|----------------|
+| INV-1001 | $42 | meals | - |
+| INV-1002 | $99 | saas | - |
+| INV-1016 | $48 | travel | - |
+| INV-1017 | $180 | hardware | - |
 
-### Human Review Required
-| Invoice | Amount | Trigger |
-|---------|--------|---------|
-| INV-1003 | $475.00 | Above $250 ceiling |
-| INV-1004 | $1,200.00 | Above $250 + HW-02 (>$1000 capital) |
-| INV-1005 | $89.00 | Missing attendee list (MEAL-01) |
-| INV-1006 | $350.00 | Client entertainment without justification (MEAL-02) |
-| INV-1008 | $12,500.00 | Way above ceiling |
-| INV-1009 | $67.00 | Unknown vendor (GLOBAL-VENDOR) |
-| INV-1010 | $234.00 | Mixed category → low confidence |
+### Human Review Required (14)
+| Invoice | Amount | Category | Trigger/Reason |
+|---------|--------|----------|----------------|
+| INV-1003 | $1820 | meals | MEAL-02, AUTONOMY-CEILING |
+| INV-1004 | $1400 | hardware | HW-02, AUTONOMY-CEILING |
+| INV-1005 | $120 | meals | GLOBAL-RECEIPT |
+| INV-1006 | $3000 | hardware | GLOBAL-MATH |
+| INV-1008 | $5000 | other | GLOBAL-FRAUD, GLOBAL-VENDOR, GLOBAL-RECEIPT, AUTONOMY-CEILING |
+| INV-1009 | 1200 EUR (~$1296) | travel | GLOBAL-FX, AUTONOMY-CEILING |
+| INV-1010 | $480 | other | AUTONOMY-CONFIDENCE, AUTONOMY-CEILING |
+| INV-1011 | $80 | saas | GLOBAL-VENDOR |
+| INV-1012 | $9500 | hardware | HW-02, AUTONOMY-CEILING |
+| INV-1013 | $300 | saas | AUTONOMY-CEILING |
+| INV-1014A | $600 | other | AUTONOMY-CEILING |
+| INV-1014B | $600 | other | AUTONOMY-CEILING |
+| INV-1018 | $220 | saas | SAAS-01 |
+| INV-1019 | $1750 | travel | TRAVEL-02, AUTONOMY-CEILING |
 
-### Rejected
-| Invoice | Trigger |
-|---------|---------|
-| INV-1011 | Alcohol-only meal (MEAL-03) |
+### Duplicate (1)
+| Invoice | Amount | Category | Trigger/Reason |
+|---------|--------|----------|----------------|
+| INV-1007 | $42 | meals | GLOBAL-DUP |
+
+### Rejected (1)
+| Invoice | Amount | Category | Trigger/Reason |
+|---------|--------|----------|----------------|
+| INV-1015 | $60 | meals | MEAL-03 |
 
 ## The Architecture Guarantee (M12)
 

@@ -22,7 +22,6 @@ Invoices are either auto-approved (fast path), escalated for human review, or re
 | Middleware | Dapr (pub/sub, state store, service invocation, secrets) |
 | Infrastructure | Docker Compose, Redis |
 | LLM | OpenRouter (OpenAI-compatible, swappable) |
-| AI Framework | Microsoft Agent Framework (MAF) |
 
 ## Architecture
 
@@ -70,7 +69,7 @@ docker compose up --build
 
 Runs 4 journeys:
 - **A**: Auto-approve (INV-1001, $42.50 meal)
-- **B**: Escalate → human approve → paid (INV-1003, $475)
+- **B**: Escalate → human approve → paid (INV-1003, $1820)
 - **C**: Duplicate detection (INV-1001 again)
 - **D**: Payment failure → saga compensation (INV-1012)
 
