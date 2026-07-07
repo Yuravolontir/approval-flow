@@ -34,11 +34,11 @@ builder.Services.AddSingleton<DeterministicRouter>();
 builder.Services.AddSingleton<IPaymentClient, DaprPaymentClient>();
 builder.Services.AddSingleton<IWorkflowStateStore, DaprWorkflowStateStore>();
 builder.Services.AddSingleton<IIdempotencyStore, DaprIdempotencyStore>();
+builder.Services.AddSingleton<IInboxStore, DaprInboxStore>();
 builder.Services.AddSingleton<ISagaIndexStore, DaprSagaIndexStore>();
 builder.Services.AddSingleton<IInvoiceStatusPublisher>(sp =>
     new RetryingInvoiceStatusPublisher(new DaprInvoiceStatusPublisher(sp.GetRequiredService<DaprClient>())));
 builder.Services.AddSingleton<SagaOrchestrator>();
-builder.Services.AddHostedService<SagaRecoveryService>();
 
 // LLM Client — use Stub by default, OpenRouter when configured
 var llmProvider = builder.Configuration["LLM_PROVIDER"] ?? "stub";
@@ -72,6 +72,16 @@ else
 
 // Load policy text for agent
 var policyText = File.Exists("policy.md") ? File.ReadAllText("policy.md") : "No policy loaded.";
+builder.Services.AddSingleton(sp => new InvoiceSubmittedProcessor(
+    sp.GetRequiredService<ILlmClient>(),
+    sp.GetRequiredService<DeterministicRouter>(),
+    sp.GetRequiredService<SagaOrchestrator>(),
+    sp.GetRequiredService<IInvoiceStatusPublisher>(),
+    sp.GetRequiredService<IWorkflowStateStore>(),
+    sp.GetRequiredService<ISagaIndexStore>(),
+    sp.GetRequiredService<IInboxStore>(),
+    sp.GetRequiredService<DaprClient>(),
+    policyText));
 
 var app = builder.Build();
 
@@ -88,102 +98,15 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "work
 // Subscribe to invoice.submitted via Dapr pub/sub
 app.MapPost("/invoice-submitted",
     [Topic(DaprComponents.PubSub, DaprComponents.InvoiceSubmittedTopic)]
-    async (InvoiceSubmittedEvent evt, DaprClient dapr, ILlmClient llm, DeterministicRouter router,
-        SagaOrchestrator saga, IInvoiceStatusPublisher statusPublisher, IIdempotencyStore idempotency) =>
+    async (InvoiceSubmittedEvent evt, InvoiceSubmittedProcessor processor) =>
 {
-    var correlationId = evt.CorrelationId;
-    var log = Log.ForContext("CorrelationId", correlationId);
-
-    if (!await idempotency.TryClaimAsync($"invoice-submitted:{evt.InvoiceId}"))
+    var r = await processor.HandleAsync(evt);
+    return r switch
     {
-        log.Information("Duplicate delivery of {InvoiceId}; acking without reprocessing", evt.InvoiceId);
-        return Results.Ok();
-    }
-
-    log.Information("Processing invoice {InvoiceId} from {Vendor}", evt.InvoiceId, evt.Invoice.Vendor);
-
-    // 1. Call AI Agent
-    AgentDecision agentDecision;
-    try
-    {
-        agentDecision = await llm.AnalyzeInvoiceAsync(evt.Invoice, policyText);
-        log.Information("Agent decision for {InvoiceId}: {Recommendation} (confidence={Confidence:P0})",
-            evt.InvoiceId, agentDecision.Recommendation, agentDecision.Confidence);
-    }
-    catch (Exception ex)
-    {
-        log.Error(ex, "Agent failed for {InvoiceId}, escalating to human", evt.InvoiceId);
-        agentDecision = new AgentDecision
-        {
-            Recommendation = "escalate",
-            Confidence = 0.0,
-            Violations = new List<string>(),
-            Reasoning = "Agent analysis failed. Escalating to human as safety fallback."
-        };
-    }
-
-    // 2. Call Deterministic Router
-    var routerResult = router.Route(evt.Invoice, agentDecision);
-    log.Information("Router decision for {InvoiceId}: {Route} [{Violations}]",
-        evt.InvoiceId, routerResult.Route, string.Join(", ", routerResult.Violations));
-
-    // 3. Create workflow state
-    var state = new WorkflowState
-    {
-        InvoiceId = evt.InvoiceId,
-        Invoice = evt.Invoice,
-        AgentDecision = agentDecision,
-        Route = routerResult.Route,
-        RouteReason = routerResult.Reason,
-        RouterViolations = routerResult.Violations,
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow
+        InboxHandlingResult.Ok => Results.Ok(),
+        InboxHandlingResult.ServiceUnavailable => Results.StatusCode(503),
+        _ => Results.StatusCode(500)
     };
-
-    // 4. Handle based on route
-    switch (routerResult.Route)
-    {
-        case RouteDecision.AutoApprove:
-            state.Status = InvoiceStatus.AutoApproved;
-            await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{evt.InvoiceId}", state);
-
-            // Start payment saga
-            await saga.ExecuteAsync(evt.InvoiceId, evt.Invoice, state, correlationId);
-            break;
-
-        case RouteDecision.HumanReview:
-            state.Status = InvoiceStatus.PendingReview;
-            state.HitlStatus = HitlStatus.PendingReview;
-            await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{evt.InvoiceId}", state);
-
-            // Add to HITL queue
-            var queue = await dapr.GetStateAsync<List<string>>(DaprComponents.StateStore, "hitl:queue") ?? new List<string>();
-            if (!queue.Contains(evt.InvoiceId))
-            {
-                queue.Add(evt.InvoiceId);
-                await dapr.SaveStateAsync(DaprComponents.StateStore, "hitl:queue", queue);
-            }
-
-            // Update invoice status
-            await statusPublisher.PublishStatusAsync(evt.InvoiceId, InvoiceStatus.PendingReview, routerResult.Reason);
-            log.Information("Invoice {InvoiceId} queued for human review", evt.InvoiceId);
-            break;
-
-        case RouteDecision.Reject:
-            state.Status = InvoiceStatus.Rejected;
-            await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{evt.InvoiceId}", state);
-            await statusPublisher.PublishStatusAsync(evt.InvoiceId, InvoiceStatus.Rejected, routerResult.Reason);
-            log.Information("Invoice {InvoiceId} rejected: {Reason}", evt.InvoiceId, routerResult.Reason);
-            break;
-
-        case RouteDecision.Duplicate:
-            state.Status = InvoiceStatus.Duplicate;
-            await dapr.SaveStateAsync(DaprComponents.StateStore, $"workflow:{evt.InvoiceId}", state);
-            await statusPublisher.PublishStatusAsync(evt.InvoiceId, InvoiceStatus.Duplicate, routerResult.Reason);
-            break;
-    }
-
-    return Results.Ok();
 });
 
 // POST /workflow/{id}/decision — HITL approve/reject/request_info
@@ -277,4 +200,5 @@ app.MapGet("/dashboard", async (DaprClient dapr) =>
     return Results.Ok(stats);
 });
 
+await StartupRecovery.RunAsync(app.Services);
 app.Run();
