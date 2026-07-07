@@ -26,7 +26,10 @@ REDIS_CTR="${REDIS_CTR:-finalprj-redis-1}"
 DAPR_HOST="${DAPR_HOST:-workflow-service}"   # sidecar shares workflow-service netns
 PUBSUB="${PUBSUB:-pubsub}"
 TOPIC="${TOPIC:-invoice.submitted}"
-INVOICE_ID="${INVOICE_ID:-RECOVER-01}"
+# Per-run-unique by default so the script is safely re-runnable: a fixed id keeps its
+# inbox:invoice-submitted key at "Completed" from the previous run, and the handler then
+# (correctly) drops the redelivery -> no workflow, INCONCLUSIVE. Override for a fixed id.
+INVOICE_ID="${INVOICE_ID:-RECOVER-$(date +%s)-$$}"
 DEPT="${DEPT:-engineering-2026Q2}"
 WF_SVC="${WF_SVC:-workflow-service}"
 WF_DAPR="${WF_DAPR:-workflow-service-dapr}"
@@ -67,12 +70,15 @@ JSON
 )
 
 echo "=== step 0: reset this test's own fixture keys (re-runnable) ==="
-# Delete only THIS invoice's workflow record and the Phase 2 idempotency claim, so a
-# re-run is not (correctly) dropped by the duplicate-delivery guard. Touches nothing else.
+# Delete only THIS invoice's workflow record, its inbox entry (F1's two-state key), and the
+# legacy Phase 2 idempotency claim, so a re-run of a FIXED id is not (correctly) dropped by
+# the inbox/duplicate-delivery guard. The default id is per-run unique, so this is belt-and-
+# braces for the INVOICE_ID-override case. Touches nothing else.
 docker exec "$REDIS_CTR" redis-cli DEL \
   "workflow-service||workflow:${INVOICE_ID}" \
+  "workflow-service||inbox:invoice-submitted:${INVOICE_ID}" \
   "workflow-service||processed:invoice-submitted:${INVOICE_ID}" >/dev/null 2>&1 || true
-echo "cleared workflow:${INVOICE_ID} and its processed marker"
+echo "cleared workflow:${INVOICE_ID}, its inbox entry, and legacy processed marker"
 
 echo ""
 echo "=== step 1: publish ${INVOICE_ID} with crash-after-reserve fault injection ==="

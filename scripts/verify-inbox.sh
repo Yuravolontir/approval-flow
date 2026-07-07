@@ -80,7 +80,12 @@ reset_ids() {
   docker exec "$REDIS_CTR" redis-cli DEL "workflow-service||inbox:index" >/dev/null 2>&1 || true
 }
 
-I2="INBOX2-01"; I3="INBOX3-01"; I1="INBOX1-01"
+# Per-run-unique invoice ids so the script is safely re-runnable. A fixed id makes the
+# budget reservation (whose id is derived deterministically from the invoice id) survive
+# across runs: re-reserve is then idempotent and scenario 2's debit delta collapses to 0
+# -> false FAIL. A fresh id every run yields a fresh inbox key and a fresh reservation.
+RUN="$(date +%s)-$$"
+I2="INBOX2-${RUN}"; I3="INBOX3-${RUN}"; I1="INBOX1-${RUN}"
 FAIL=0
 
 echo "############ reset test fixtures ############"
