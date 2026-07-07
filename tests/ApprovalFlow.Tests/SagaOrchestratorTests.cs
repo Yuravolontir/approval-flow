@@ -16,6 +16,7 @@ internal class FakePaymentClient : IPaymentClient
     public PaymentExecuteResponse ExecuteResponse { get; set; } = new() { Success = true };
     public Exception? ReserveThrows { get; set; }
     public Exception? ExecuteThrows { get; set; }
+    public Exception? ReleaseThrows { get; set; }
 
     public Task<BudgetReserveResponse> ReserveBudgetAsync(BudgetReserveRequest request)
     {
@@ -34,6 +35,7 @@ internal class FakePaymentClient : IPaymentClient
     public Task ReleaseBudgetAsync(string reservationId, string department, decimal amount)
     {
         ReleaseCalls.Add((reservationId, department, amount));
+        if (ReleaseThrows != null) throw ReleaseThrows;
         return Task.CompletedTask;
     }
 }
@@ -183,9 +185,31 @@ public class SagaOrchestratorTests
         var release = Assert.Single(_payments.ReleaseCalls);
         Assert.Equal("res-1", release.ReservationId);
         Assert.Equal(InvoiceStatus.PaymentFailed, state.Status);
-        Assert.Equal(SagaStep.Failed, state.CurrentSagaStep);
+        Assert.Equal(SagaStep.Compensated, state.CurrentSagaStep);
+        Assert.Contains(SagaStep.Compensating, _stateStore.SavedSteps);
+        Assert.Contains(SagaStep.Compensated, _stateStore.SavedSteps);
         var published = Assert.Single(_publisher.Published);
         Assert.Contains("sidecar down", published.Reason);
+        Assert.DoesNotContain("inv-1", await _index.GetInFlightAsync());
+    }
+
+    [Fact]
+    public async Task ExecuteThrows_ReleaseThrows_AfterCompensatingSave_LeavesInFlightForRecovery()
+    {
+        var (invoice, state) = CreateInvoice();
+        _payments.ExecuteThrows = new InvalidOperationException("sidecar down");
+        _payments.ReleaseThrows = new InvalidOperationException("release backend down");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CreateSaga().ExecuteAsync("inv-1", invoice, state, "corr-1"));
+
+        // Proves Compensating is saved before release, and saga:inflight is left for recovery.
+        Assert.Equal(SagaStep.Compensating, state.CurrentSagaStep);
+        Assert.Contains(SagaStep.Compensating, _stateStore.SavedSteps);
+        Assert.DoesNotContain(SagaStep.Compensated, _stateStore.SavedSteps);
+        Assert.DoesNotContain(SagaStep.Failed, _stateStore.SavedSteps);
+        Assert.Single(_payments.ReleaseCalls);
+        Assert.Contains("inv-1", await _index.GetInFlightAsync());
     }
 
     [Fact]

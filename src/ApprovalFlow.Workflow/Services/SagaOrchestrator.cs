@@ -105,15 +105,11 @@ public class SagaOrchestrator(
             // Compensate if we have a reservation
             if (!string.IsNullOrEmpty(state.ReservationId))
             {
-                try
-                {
-                    await payments.ReleaseBudgetAsync(state.ReservationId, invoice.Department, usdAmount);
-                    log.Information("Emergency compensation complete for {InvoiceId}", invoiceId);
-                }
-                catch (Exception compEx)
-                {
-                    log.Error(compEx, "Emergency compensation FAILED for {InvoiceId}", invoiceId);
-                }
+                // Persist Compensating before release so recovery resumes compensation after a crash/failure.
+                await CompleteCompensationAsync(state, state.ReservationId, invoice.Department, usdAmount,
+                    $"Payment processing error, budget released: {ex.Message}");
+                await RemoveInFlightAfterTerminalAsync(invoiceId, log);
+                return;
             }
 
             state.Status = InvoiceStatus.PaymentFailed;
