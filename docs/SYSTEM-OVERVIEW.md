@@ -212,18 +212,24 @@ toward over-escalation, never over-approval. FAR stayed 0 throughout. Details in
     the second one only because payload hash matches).
 14. **Agent always runs before the router**, even for invoices a pre-filter could reject/escalate
     without an LLM call (token/latency cost; deferred from the first review round).
-15. **Pub/sub is at-least-once, not exactly-once:** a redelivered `invoice.submitted` event is
-    reprocessed (no idempotency guard on `/invoice-submitted`), so payment execution and the
-    dashboard counter can both double for one invoice.
-16. **Budget reserve has no ETag:** two concurrent reservations can both succeed and overspend a
-    department budget (reproduced live with INV-1014A/B).
-17. **No saga-recovery worker:** a process crash between budget reserve and payment leaves an
-    orphaned reservation that nothing releases.
-18. **Router checks diverge from `policy.md`:** `MEAL-01` only checks that an attendee count is
-    present, not the `$75/attendee` cap; `GLOBAL-FRAUD` fires only on two or more signals even
-    though the policy says *any* fraud signal forces a human; and alcohol-only detection triggers
-    only on the literal tokens `alcohol` / `bar tab` / `drinks only`, so a receipt of only `wine`
-    or `beer` line items is not flagged as alcohol-only.
+15. **Pub/sub is at-least-once, not exactly-once — RESOLVED (`1f0f627`):** a redelivered
+    `invoice.submitted` event used to be reprocessed (no working idempotency guard on
+    `/invoice-submitted`), so payment execution and the dashboard counter could both double.
+    A two-state inbox (InProgress -> Completed) plus a startup barrier now makes handling
+    idempotent, and a crash between the claim and the first state save no longer drops the
+    message. Live-proven against Redis ground truth (single debit after a real crash).
+16. **Budget reserve has no ETag — RESOLVED (`507d422`):** two concurrent reservations could
+    both succeed and overspend a department budget (reproduced live with INV-1014A/B). Reserve
+    now uses an ETag compare-and-swap (`BudgetService` / `BudgetStore`), so a losing writer
+    retries against fresh state instead of overspending.
+17. **No saga-recovery worker — RESOLVED (`02534db`, `7154fd6`):** a crash between budget
+    reserve and payment left an orphaned reservation that nothing released. A startup recovery
+    pass now resumes in-flight sagas — including the pre-BudgetReserved window — to a terminal
+    state and releases or completes the reservation. Live-proven against Redis ground truth.
+18. **Router checks diverge from `policy.md` — RESOLVED (`eeb70a9`):** `MEAL-01` now enforces
+    the `$75/attendee` cap, not just attendee presence; `GLOBAL-FRAUD` fires on any single
+    signal instead of requiring two or more; and alcohol-only detection covers `wine`, `beer`,
+    and `cocktail` tokens, not only `alcohol` / `bar tab` / `drinks only`.
 19. **Status publish is best-effort:** it stops after 3 attempts
     (`src/ApprovalFlow.Workflow/Services/IInvoiceStatusPublisher.cs`), so a status update can be
     silently lost while the saga itself still completes.
