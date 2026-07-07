@@ -173,6 +173,24 @@ public class SagaRecoveryTests
     }
 
     [Fact]
+    public async Task Recover_ReservingSaga_RetriesReserveAndPays()
+    {
+        var state = CreateState(SagaStep.Reserving);
+        state.ReservationId = null;
+        await _index.AddInFlightAsync("inv-1");
+
+        await CreateSaga().RecoverAsync(state, "corr-1");
+
+        Assert.Equal(InvoiceStatus.Paid, state.Status);
+        Assert.Equal(SagaStep.StatusUpdated, state.CurrentSagaStep);
+        Assert.Equal("res-1", state.ReservationId);
+        Assert.Single(_payments.ReserveCalls);
+        Assert.Single(_payments.ExecuteCalls);
+        Assert.Empty(_payments.ReleaseCalls);
+        Assert.DoesNotContain("inv-1", await _index.GetInFlightAsync());
+    }
+
+    [Fact]
     public async Task Recover_CompensatingSaga_ReleasesAndMarksPaymentFailed()
     {
         var state = CreateState(SagaStep.Compensating);

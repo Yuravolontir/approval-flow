@@ -67,7 +67,7 @@ public class SagaRecoveryService(IServiceProvider sp, ILogger<SagaRecoveryServic
                     continue;
                 }
 
-                if (state.CurrentSagaStep is SagaStep.BudgetReserved or SagaStep.Compensating)
+                if (state.CurrentSagaStep is SagaStep.Reserving or SagaStep.BudgetReserved or SagaStep.Compensating)
                 {
                     await saga.RecoverAsync(state, $"recovery:{invoiceId}:{Guid.NewGuid():N}");
                     recovered++;

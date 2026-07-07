@@ -21,11 +21,22 @@ public class SagaOrchestrator(
         var log = Log.ForContext("CorrelationId", correlationId);
         var usdAmount = fxRates.ConvertToUsd(invoice.Total, invoice.Currency);
         var isBudgetReservedResume = state.CurrentSagaStep == SagaStep.BudgetReserved;
+        var isFreshStart = state.CurrentSagaStep == SagaStep.NotStarted;
 
         await index.AddInFlightAsync(invoiceId);
 
         try
         {
+            // Persist a pre-reserve marker BEFORE the reserve call so a crash after the reserve
+            // debit but before the BudgetReserved save is recoverable. Only on the first pass;
+            // on a recovery-resume the step is already Reserving/BudgetReserved and must not be
+            // rolled back.
+            if (isFreshStart)
+            {
+                state.CurrentSagaStep = SagaStep.Reserving;
+                await stateStore.SaveWorkflowAsync(state);
+            }
+
             // Step 1: Reserve budget
             log.Information("Saga step 1: Reserving budget for {InvoiceId} ({Amount:C})", invoiceId, usdAmount);
             var reserveResponse = await payments.ReserveBudgetAsync(new BudgetReserveRequest
@@ -46,6 +57,19 @@ public class SagaOrchestrator(
                     $"Budget reservation failed: {reserveResponse.Error}");
                 await RemoveInFlightAfterTerminalAsync(invoiceId, log);
                 return;
+            }
+
+            // TEST-ONLY fault injection: crash after the reserve debit commits but before the
+            // BudgetReserved save, so the orphaned-reservation recovery path can be proven on the
+            // live stack. Gated on an explicit scenario string and on the first pass only (a
+            // recovery-resume has isFreshStart=false, so it will not re-crash). Never triggers in
+            // normal operation.
+            if (isFreshStart &&
+                invoice.Scenario is not null &&
+                invoice.Scenario.Contains("crash-before-budgetreserved"))
+            {
+                log.Warning("FAULT INJECTION: crashing after reserve, before BudgetReserved save for {InvoiceId}", invoiceId);
+                Environment.Exit(1);
             }
 
             state.ReservationId = reserveResponse.ReservationId;
@@ -128,6 +152,7 @@ public class SagaOrchestrator(
 
         switch (state.CurrentSagaStep)
         {
+            case SagaStep.Reserving:
             case SagaStep.BudgetReserved:
                 await ExecuteAsync(state.InvoiceId, state.Invoice, state, correlationId);
                 break;

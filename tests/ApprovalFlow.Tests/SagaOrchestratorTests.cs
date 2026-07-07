@@ -134,6 +134,20 @@ public class SagaOrchestratorTests
     }
 
     [Fact]
+    public async Task Execute_FreshStart_PersistsReservingBeforeBudgetReserved()
+    {
+        var (invoice, state) = CreateInvoice();
+
+        await CreateSaga().ExecuteAsync("inv-1", invoice, state, "corr-1");
+
+        var reservingIndex = _stateStore.SavedSteps.IndexOf(SagaStep.Reserving);
+        var budgetReservedIndex = _stateStore.SavedSteps.IndexOf(SagaStep.BudgetReserved);
+        Assert.NotEqual(-1, reservingIndex);
+        Assert.NotEqual(-1, budgetReservedIndex);
+        Assert.True(reservingIndex < budgetReservedIndex);
+    }
+
+    [Fact]
     public async Task ReserveFails_MarksFailed_NoExecute_NoRelease()
     {
         var (invoice, state) = CreateInvoice();

@@ -25,7 +25,11 @@ public enum SagaStep
     StatusUpdated,
     Compensating,
     Compensated,
-    Failed
+    Failed,
+    // Appended (not inserted before BudgetReserved) so existing int-serialized states
+    // keep stable numeric values. Marks "AddInFlight done, reserve may be in flight,
+    // BudgetReserved not yet persisted" so recovery can resume an orphaned reservation.
+    Reserving
 }
 
 public enum HitlStatus
