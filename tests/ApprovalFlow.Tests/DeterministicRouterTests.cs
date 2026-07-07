@@ -278,6 +278,96 @@ public class DeterministicRouterTests
         Assert.Equal(42m, usd);
     }
 
+    [Fact]
+    public void MealOver75PerAttendee_UnderCeiling_HumanReview()
+    {
+        var invoice = CreateInvoice("MEAL-OVER-75", "Bistro 19", true, "USD", "meals", 200.0m, 15.0m,
+            new() { new() { Description = "Team lunch", Quantity = 1, UnitPrice = 185.0m } },
+            receiptPresent: true, attendees: 1);
+
+        var result = _router.Route(invoice, _highConfidence);
+        Assert.Equal(RouteDecision.HumanReview, result.Route);
+        Assert.Contains("MEAL-01", result.Violations);
+    }
+
+    [Fact]
+    public void SingleFraudSignal_UnderCeiling_HumanReview()
+    {
+        var invoice = CreateInvoice("SINGLE-FRAUD", "Known Advisory", true, "USD", "other", 200.0m, 0,
+            new() { new() { Description = "Consulting services", Quantity = 1, UnitPrice = 200.0m } },
+            receiptPresent: true);
+
+        var result = _router.Route(invoice, _highConfidence);
+        Assert.Equal(RouteDecision.HumanReview, result.Route);
+        Assert.Contains("GLOBAL-FRAUD", result.Violations);
+    }
+
+    [Fact]
+    public void OffHoursFraud_UnderCeiling_HumanReview()
+    {
+        var invoice = CreateInvoice("OFF-HOURS", "City Cabs", true, "USD", "travel", 48.0m, 0,
+            new() { new() { Description = "Airport taxi", Quantity = 1, UnitPrice = 48.0m } },
+            receiptPresent: true);
+        invoice.Date = "2026-05-16";
+
+        var result = _router.Route(invoice, _highConfidence);
+        Assert.Equal(RouteDecision.HumanReview, result.Route);
+        Assert.Contains("GLOBAL-FRAUD", result.Violations);
+    }
+
+    [Fact]
+    public void PaddedQuantityFraud_UnderCeiling_HumanReview()
+    {
+        var invoice = CreateInvoice("PADDED-QTY", "Office Depot", true, "USD", "other", 150.0m, 0,
+            new() { new() { Description = "Sticker pack", Quantity = 50, UnitPrice = 3.0m } },
+            receiptPresent: true);
+
+        var result = _router.Route(invoice, _highConfidence);
+        Assert.Equal(RouteDecision.HumanReview, result.Route);
+        Assert.Contains("GLOBAL-FRAUD", result.Violations);
+    }
+
+    [Fact]
+    public void MissingReceiptNotFraud_UnderCeiling()
+    {
+        var invoice = CreateInvoice("MISSING-RECEIPT-NOT-FRAUD", "Office Depot", true, "USD", "other", 120.0m, 0,
+            new() { new() { Description = "Printer paper", Quantity = 1, UnitPrice = 120.0m } },
+            receiptPresent: false);
+
+        var result = _router.Route(invoice, _highConfidence);
+        Assert.Equal(RouteDecision.HumanReview, result.Route);
+        Assert.Contains("GLOBAL-RECEIPT", result.Violations);
+        Assert.DoesNotContain("GLOBAL-FRAUD", result.Violations);
+    }
+
+    [Fact]
+    public void WineOnlyMeal_Reject()
+    {
+        var invoice = CreateInvoice("WINE-ONLY", "Bistro 19", true, "USD", "meals", 80.0m, 0,
+            new() { new() { Description = "Wine tasting", Quantity = 1, UnitPrice = 80.0m } },
+            receiptPresent: true, attendees: 2);
+
+        var result = _router.Route(invoice, _highConfidence);
+        Assert.Equal(RouteDecision.Reject, result.Route);
+        Assert.Contains("MEAL-03", result.Violations);
+    }
+
+    [Fact]
+    public void BarTabWithFood_NotAlcoholOnly()
+    {
+        var invoice = CreateInvoice("BAR-TAB-WITH-FOOD", "Bistro 19", true, "USD", "meals", 100.0m, 0,
+            new()
+            {
+                new() { Description = "Bar tab", Quantity = 1, UnitPrice = 30.0m },
+                new() { Description = "Dinner entrees", Quantity = 1, UnitPrice = 70.0m }
+            },
+            receiptPresent: true, attendees: 2);
+
+        var result = _router.Route(invoice, _highConfidence);
+        Assert.Equal(RouteDecision.AutoApprove, result.Route);
+        Assert.DoesNotContain("MEAL-03", result.Violations);
+    }
+
     // Helper
     private static InvoiceDto CreateInvoice(string id, string vendor, bool vendorKnown, string currency,
         string category, decimal total, decimal tax, List<LineItemDto> lineItems,

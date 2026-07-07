@@ -1,5 +1,6 @@
 using ApprovalFlow.Shared.Constants;
 using ApprovalFlow.Shared.Models;
+using System.Globalization;
 
 namespace ApprovalFlow.Workflow.Services;
 
@@ -12,6 +13,17 @@ public class RouterResult
 
 public class DeterministicRouter
 {
+    private const int PaddedQuantityThreshold = 50;
+    private static readonly string[] AlcoholOnlyTerms = new[]
+    {
+        "alcohol",
+        "bar tab",
+        "drinks only",
+        "wine",
+        "beer",
+        "cocktail"
+    };
+
     private readonly PolicyConfig _config;
     private readonly FxRates _fxRates;
 
@@ -41,31 +53,35 @@ public class DeterministicRouter
         }
 
         // GLOBAL-FRAUD: suspicious patterns
-        if (HasFraudSignals(invoice))
+        if (HasFraudSignals(invoice, usdAmount))
         {
             violations.Add(PolicyRules.GlobalFraud);
         }
 
-        // GLOBAL-FX: foreign currency over $1000
-        if (invoice.Currency != "USD" && usdAmount > _config.FxHardStopThreshold)
+        // GLOBAL-FX: foreign currency over $1000 or above the autonomy ceiling
+        if (invoice.Currency != "USD" && (usdAmount > _config.FxHardStopThreshold || usdAmount > _config.AutonomyCeiling))
         {
             violations.Add(PolicyRules.GlobalFx);
         }
 
         // GLOBAL-RECEIPT: missing receipt for amount > $25
-        if (!invoice.ReceiptPresent && invoice.Total > _config.ReceiptThreshold)
+        if (!invoice.ReceiptPresent && usdAmount > _config.ReceiptThreshold)
         {
             violations.Add(PolicyRules.GlobalReceipt);
         }
 
-        // MEAL-01: missing attendee count for meals
+        // MEAL-01: missing attendee count or over per-attendee limit for meals
         if (invoice.Category == Categories.Meals && (!invoice.Attendees.HasValue || invoice.Attendees.Value <= 0))
+        {
+            violations.Add(PolicyRules.Meal01_Attendees);
+        }
+        else if (invoice.Category == Categories.Meals && usdAmount > invoice.Attendees.GetValueOrDefault() * _config.MealPerAttendeeLimit)
         {
             violations.Add(PolicyRules.Meal01_Attendees);
         }
 
         // MEAL-02: client entertainment over $500 without justification/client name
-        if (invoice.Category == Categories.Meals && usdAmount > _config.ClientEntertainmentThreshold)
+        if (invoice.Category == Categories.Meals && usdAmount > _config.ClientEntertainmentThreshold && IsClientEntertainment(invoice))
         {
             var hasClientInfo = !string.IsNullOrEmpty(invoice.Notes) &&
                                 invoice.Notes.Contains("client", StringComparison.OrdinalIgnoreCase) &&
@@ -195,16 +211,12 @@ public class DeterministicRouter
         return Math.Abs(computed - invoice.Total) > 0.01m;
     }
 
-    private bool HasFraudSignals(InvoiceDto invoice)
+    private bool HasFraudSignals(InvoiceDto invoice, decimal usdAmount)
     {
         var signals = 0;
 
-        // Round number (divisible by 1000 and > 1000)
-        if (invoice.Total >= 1000 && invoice.Total % 1000 == 0)
-            signals++;
-
-        // New vendor
-        if (!invoice.VendorKnown)
+        // Round number to a brand-new vendor
+        if (!invoice.VendorKnown && usdAmount >= 1000 && usdAmount % 1000 == 0)
             signals++;
 
         // No line-item detail (single generic line)
@@ -215,12 +227,16 @@ public class DeterministicRouter
                 signals++;
         }
 
-        // Missing receipt
-        if (!invoice.ReceiptPresent)
+        // Off-hours
+        if (DateTime.TryParseExact(invoice.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) &&
+            (date.DayOfWeek == DayOfWeek.Saturday || date.DayOfWeek == DayOfWeek.Sunday))
             signals++;
 
-        // Need at least 2 signals to flag as fraud
-        return signals >= 2;
+        // Padded quantities
+        if (invoice.LineItems.Any(li => li.Quantity >= PaddedQuantityThreshold))
+            signals++;
+
+        return signals >= 1;
     }
 
     private static bool IsAlcoholOnly(InvoiceDto invoice)
@@ -229,13 +245,18 @@ public class DeterministicRouter
         return invoice.LineItems.Any(li =>
         {
             var desc = li.Description.ToLowerInvariant();
-            return desc.Contains("alcohol") || desc.Contains("bar tab") || desc.Contains("drinks only");
+            return AlcoholOnlyTerms.Any(term => desc.Contains(term));
         }) && invoice.LineItems.All(li =>
         {
             var desc = li.Description.ToLowerInvariant();
-            return desc.Contains("alcohol") || desc.Contains("bar tab") || desc.Contains("drinks only") ||
-                   desc.Contains("wine") || desc.Contains("beer") || desc.Contains("cocktail");
+            return AlcoholOnlyTerms.Any(term => desc.Contains(term));
         });
+    }
+
+    private static bool IsClientEntertainment(InvoiceDto invoice)
+    {
+        var allText = string.Join(" ", invoice.LineItems.Select(li => li.Description)) + " " + (invoice.Notes ?? "");
+        return allText.Contains("client", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool HasBusinessJustification(InvoiceDto invoice)
