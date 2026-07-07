@@ -47,7 +47,7 @@
             </div>
             <div class="col-md-2">
                 <label class="form-label">Vendor Known</label>
-                <select @bind="invoice.VendorKnown" class="form-select">
+                <select @bind="VendorKnownStr" class="form-select">
                     <option value="true">Yes</option>
                     <option value="false">No</option>
                 </select>
@@ -133,6 +133,14 @@
         ReceiptPresent = true,
         Date = DateTime.Now.ToString("yyyy-MM-dd")
     };
+
+    // Blazor renders a bool-bound <select> without a string value attribute, so no
+    // <option> matches and the control renders blank. Bind to a string proxy instead.
+    private string VendorKnownStr
+    {
+        get => invoice.VendorKnown ? "true" : "false";
+        set => invoice.VendorKnown = value == "true";
+    }
 
     private string lineDescription = "";
     private int lineQuantity = 1;
